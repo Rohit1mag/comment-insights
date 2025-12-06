@@ -19,7 +19,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# lib/  # Commented out - was blocking frontend/lib/
 lib64/
 parts/
 sdist/
