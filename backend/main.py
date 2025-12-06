@@ -7,16 +7,13 @@ import os
 import re
 import random
 from typing import List, Dict, Optional
-from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import sys
 
-# Add parent directory to path to import our existing modules
-sys.path.append(str(Path(__file__).parent.parent))
+# Import from local module (same directory)
 from fetch_comments import get_youtube_service, get_video_comments
 from anthropic import Anthropic
 
