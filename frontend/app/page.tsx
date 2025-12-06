@@ -52,18 +52,20 @@ export default function Home() {
         }
 
         if (!response.ok) {
-        // Try to parse as JSON, but handle HTML/text errors
-        let errorMessage = "Failed to analyze video";
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.detail || errorData.message || errorMessage;
-        } catch {
-          // If response is not JSON, get text
+          // Read response as text first (can only read body once)
           const errorText = await response.text();
-          errorMessage = errorText || errorMessage;
+          let errorMessage = "Failed to analyze video";
+          
+          // Try to parse as JSON
+          try {
+            const errorData = JSON.parse(errorText);
+            errorMessage = errorData.detail || errorData.message || errorMessage;
+          } catch {
+            // If not JSON, use the text as-is
+            errorMessage = errorText || errorMessage;
+          }
+          throw new Error(errorMessage);
         }
-        throw new Error(errorMessage);
-      }
 
       setLoadingStep("Analyzing with AI...");
       const data = await response.json();
