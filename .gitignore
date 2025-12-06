@@ -80,3 +80,6 @@ htmlcov/
 # Build files
 *.pyc
 *.pyo
+
+# Usage tracking data
+backend/usage_data.json

@@ -5,9 +5,12 @@ FastAPI backend for YouTube Comment Insights
 
 import os
 import re
+import json
 import random
+from datetime import datetime
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +29,129 @@ except ImportError:
 
 app = FastAPI(title="YouTube Comment Insights API")
 
+# Usage tracking
+USAGE_FILE = Path(__file__).parent / "usage_data.json"
+ANALYSIS_LIMIT = 5
+UNLIMITED_USERS = ["rohitkota4@gmail.com"]
+
+
+def get_current_month() -> str:
+    """Get current month in YYYY-MM format."""
+    return datetime.now().strftime("%Y-%m")
+
+
+def load_usage_data() -> Dict:
+    """Load usage data from file."""
+    if USAGE_FILE.exists():
+        try:
+            with open(USAGE_FILE, "r") as f:
+                data = json.load(f)
+                # Migrate old format (simple int) to new format (dict with used and last_reset_month)
+                migrated = {}
+                for email, value in data.items():
+                    if isinstance(value, int):
+                        # Old format: just a number
+                        migrated[email] = {
+                            "used": value,
+                            "last_reset_month": get_current_month()
+                        }
+                    else:
+                        # New format: already a dict
+                        migrated[email] = value
+                return migrated
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def save_usage_data(data: Dict) -> None:
+    """Save usage data to file."""
+    with open(USAGE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_user_usage(email: str) -> int:
+    """Get the number of analyses used by a user, resetting if it's a new month."""
+    data = load_usage_data()
+    current_month = get_current_month()
+    
+    if email not in data:
+        return 0
+    
+    user_data = data[email]
+    
+    # Check if we need to reset (new month)
+    if isinstance(user_data, dict):
+        last_reset_month = user_data.get("last_reset_month", current_month)
+        if last_reset_month != current_month:
+            # New month - reset usage
+            data[email] = {
+                "used": 0,
+                "last_reset_month": current_month
+            }
+            save_usage_data(data)
+            return 0
+        return user_data.get("used", 0)
+    else:
+        # Legacy format - migrate it
+        data[email] = {
+            "used": user_data if isinstance(user_data, int) else 0,
+            "last_reset_month": current_month
+        }
+        save_usage_data(data)
+        return data[email]["used"]
+
+
+def increment_user_usage(email: str) -> int:
+    """Increment usage count and return new count."""
+    data = load_usage_data()
+    current_month = get_current_month()
+    
+    if email not in data:
+        data[email] = {
+            "used": 1,
+            "last_reset_month": current_month
+        }
+    else:
+        user_data = data[email]
+        if isinstance(user_data, dict):
+            # Check if we need to reset (new month)
+            last_reset_month = user_data.get("last_reset_month", current_month)
+            if last_reset_month != current_month:
+                # New month - reset and start at 1
+                data[email] = {
+                    "used": 1,
+                    "last_reset_month": current_month
+                }
+            else:
+                # Same month - increment
+                data[email]["used"] = user_data.get("used", 0) + 1
+        else:
+            # Legacy format - migrate it
+            data[email] = {
+                "used": (user_data if isinstance(user_data, int) else 0) + 1,
+                "last_reset_month": current_month
+            }
+    
+    save_usage_data(data)
+    return data[email]["used"]
+
+
+def check_usage_limit(email: Optional[str]) -> tuple[bool, int]:
+    """
+    Check if user can perform analysis.
+    Returns (can_analyze, remaining_analyses).
+    """
+    if not email:
+        return False, 0
+    
+    if email in UNLIMITED_USERS:
+        return True, -1  # -1 indicates unlimited
+    
+    current_usage = get_user_usage(email)
+    remaining = max(0, ANALYSIS_LIMIT - current_usage)
+    return remaining > 0, remaining
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +164,15 @@ app.add_middleware(
 
 class AnalyzeRequest(BaseModel):
     video_url: str
+    user_email: Optional[str] = None
+
+
+class UsageResponse(BaseModel):
+    email: str
+    used: int
+    remaining: int  # -1 means unlimited
+    limit: int
+    is_unlimited: bool
 
 
 class Comment(BaseModel):
@@ -120,7 +255,7 @@ Comments:
 {comments_text}"""
     
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -166,7 +301,7 @@ Comments:
 {comments_text}"""
     
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=500,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -233,7 +368,7 @@ Comments:
 {comments_text}"""
     
     message = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
@@ -299,10 +434,40 @@ async def root():
     return {"message": "YouTube Comment Insights API", "status": "running"}
 
 
+@app.get("/usage/{email}")
+async def get_usage(email: str) -> UsageResponse:
+    """Get usage statistics for a user."""
+    is_unlimited = email in UNLIMITED_USERS
+    used = get_user_usage(email)
+    remaining = -1 if is_unlimited else max(0, ANALYSIS_LIMIT - used)
+    
+    return UsageResponse(
+        email=email,
+        used=used,
+        remaining=remaining,
+        limit=ANALYSIS_LIMIT,
+        is_unlimited=is_unlimited
+    )
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_video(request: AnalyzeRequest):
     """Analyze a YouTube video's comments."""
     try:
+        # Check usage limits
+        if not request.user_email:
+            raise HTTPException(
+                status_code=401, 
+                detail="Please sign in to analyze videos"
+            )
+        
+        can_analyze, remaining = check_usage_limit(request.user_email)
+        if not can_analyze:
+            raise HTTPException(
+                status_code=429, 
+                detail=f"You've reached your limit of {ANALYSIS_LIMIT} free analyses. Contact support for more access."
+            )
+        
         # Extract video ID
         video_id = extract_video_id(request.video_url)
         
@@ -321,6 +486,10 @@ async def analyze_video(request: AnalyzeRequest):
         
         # Assign sentiments to comments
         comments_with_sentiment = assign_sentiments_to_comments(comments, sentiment)
+        
+        # Increment usage count after successful analysis
+        if request.user_email and request.user_email not in UNLIMITED_USERS:
+            increment_user_usage(request.user_email)
         
         return AnalyzeResponse(
             video_id=video_id,
