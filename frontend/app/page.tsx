@@ -29,9 +29,10 @@ export default function Home() {
         // Call our Python API
         setLoadingStep("Fetching all comments from YouTube... (this may take a minute for videos with many comments)");
         
-        // In development, call backend directly. In production, use Next.js rewrite
+        // Use environment variable if set, otherwise detect dev/prod
+        const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
         const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const apiUrl = isDev ? 'http://localhost:8000' : '/api/python';
+        const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
         
         // Create abort controller for timeout (5 minutes for videos with many comments)
         const controller = new AbortController();
