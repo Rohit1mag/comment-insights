@@ -8,7 +8,7 @@ if [ ! -f .env ]; then
     echo "⚠️  Warning: .env file not found!"
     echo "Create a .env file with your API keys:"
     echo "  YOUTUBE_API_KEY=your_key_here"
-    echo "  CLAUDE_API_KEY=your_key_here"
+    echo "  TOGETHER_API_KEY=your_key_here"
     echo ""
     read -p "Press Enter to continue anyway or Ctrl+C to exit..."
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script to fetch comments from a YouTube video and summarize constructive criticism.
-Requires YOUTUBE_API_KEY and CLAUDE_API_KEY environment variables to be set.
+Requires YOUTUBE_API_KEY and TOGETHER_API_KEY environment variables to be set.
 Environment variables can be provided via a .env file in the project root.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from anthropic import Anthropic
+from together import Together
 
 try:
     # Optional: load environment variables from .env if python-dotenv is installed
@@ -175,15 +175,15 @@ def summarize_constructive_criticism(comments):
     Returns:
         Summary string of constructive criticism
     """
-    api_key = os.getenv('CLAUDE_API_KEY')
+    api_key = os.getenv('TOGETHER_API_KEY')
     
     if not api_key:
         raise ValueError(
-            "CLAUDE_API_KEY environment variable is not set. "
-            "Please set it using: export CLAUDE_API_KEY='your_api_key'"
+            "TOGETHER_API_KEY environment variable is not set. "
+            "Please set it using: export TOGETHER_API_KEY='your_api_key'"
         )
     
-    client = Anthropic(api_key=api_key)
+    client = Together(api_key=api_key)
     
     # Prepare comments text for Claude
     comments_text = "\n\n".join([
@@ -218,21 +218,21 @@ def summarize_constructive_criticism(comments):
 # Please provide a concise summary of the constructive criticism found in these comments"""
 
     try:
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2000,
+        response = client.chat.completions.create(
+            model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
             messages=[
                 {
                     "role": "user",
                     "content": prompt
                 }
-            ]
+            ],
+            max_tokens=2000
         )
         
-        return message.content[0].text
+        return response.choices[0].message.content
     
     except Exception as e:
-        raise Exception(f"Error calling Claude API: {e}")
+        raise Exception(f"Error calling Together AI API: {e}")
 
 
 def main():

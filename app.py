@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from fetch_comments import get_youtube_service, get_video_comments, summarize_constructive_criticism
-from anthropic import Anthropic
+from together import Together
 import plotly.express as px
 
 try:
@@ -46,7 +46,7 @@ def extract_video_id(url):
 
 def analyze_sentiment(comments):
     """
-    Use Claude API to analyze sentiment of comments and return counts.
+    Use Together AI API to analyze sentiment of comments and return counts.
     
     Args:
         comments: List of comment dictionaries
@@ -54,12 +54,12 @@ def analyze_sentiment(comments):
     Returns:
         Dictionary with 'positive', 'neutral', 'negative' counts
     """
-    api_key = os.getenv('CLAUDE_API_KEY')
+    api_key = os.getenv('TOGETHER_API_KEY')
     
     if not api_key:
-        raise ValueError("CLAUDE_API_KEY environment variable is not set.")
+        raise ValueError("TOGETHER_API_KEY environment variable is not set.")
     
-    client = Anthropic(api_key=api_key)
+    client = Together(api_key=api_key)
     
     # Prepare comments text for Claude
     comments_text = "\n\n".join([
@@ -82,18 +82,18 @@ Here are the comments:
 {comments_text}"""
 
     try:
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=500,
+        response = client.chat.completions.create(
+            model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
             messages=[
                 {
                     "role": "user",
                     "content": prompt
                 }
-            ]
+            ],
+            max_tokens=500
         )
         
-        response_text = message.content[0].text.strip()
+        response_text = response.choices[0].message.content.strip()
         
         # Extract JSON from response
         import json

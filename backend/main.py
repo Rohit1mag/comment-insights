@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 # Import from local module (same directory)
 from fetch_comments import get_youtube_service, get_video_comments
-from anthropic import Anthropic
+from together import Together
 
 # Load environment variables
 try:
@@ -222,11 +222,11 @@ def extract_video_id(url: str) -> str:
 
 def get_ai_summary(comments: List[Dict]) -> str:
     """Get AI summary of comments."""
-    api_key = os.getenv('CLAUDE_API_KEY')
+    api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
-        raise ValueError("CLAUDE_API_KEY not set")
+        raise ValueError("TOGETHER_API_KEY not set")
     
-    client = Anthropic(api_key=api_key)
+    client = Together(api_key=api_key)
     
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
@@ -254,22 +254,22 @@ If no meaningful feedback is present, say so.
 Comments:
 {comments_text}"""
     
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
     )
     
-    return message.content[0].text
+    return response.choices[0].message.content
 
 
 def get_sentiment_analysis(comments: List[Dict]) -> Dict[str, int]:
     """Get sentiment breakdown of comments."""
-    api_key = os.getenv('CLAUDE_API_KEY')
+    api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
-        raise ValueError("CLAUDE_API_KEY not set")
+        raise ValueError("TOGETHER_API_KEY not set")
     
-    client = Anthropic(api_key=api_key)
+    client = Together(api_key=api_key)
     
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
@@ -300,13 +300,13 @@ Return ONLY a JSON object with this format:
 Comments:
 {comments_text}"""
     
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=500
     )
     
-    response_text = message.content[0].text.strip()
+    response_text = response.choices[0].message.content.strip()
     
     # Extract JSON
     import json
@@ -323,11 +323,11 @@ Comments:
 
 def get_action_items(comments: List[Dict]) -> List[ActionItem]:
     """Get actionable recommendations from comments."""
-    api_key = os.getenv('CLAUDE_API_KEY')
+    api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
-        raise ValueError("CLAUDE_API_KEY not set")
+        raise ValueError("TOGETHER_API_KEY not set")
     
-    client = Anthropic(api_key=api_key)
+    client = Together(api_key=api_key)
     
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
@@ -367,13 +367,13 @@ Focus on:
 Comments:
 {comments_text}"""
     
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}]
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1500
     )
     
-    response_text = message.content[0].text.strip()
+    response_text = response.choices[0].message.content.strip()
     
     # Extract JSON array
     import json
