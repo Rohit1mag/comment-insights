@@ -164,66 +164,74 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
+    <div className="min-h-screen relative z-10">
       {/* Header */}
-      <header className="border-b bg-white/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
+      <header className="glass sticky top-0 z-50 border-b border-white/10">
+        <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Youtube className="h-8 w-8 text-red-600" />
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                Comment Insights
+            <div className="flex items-center gap-4 animate-in-1">
+              <div className="relative">
+                <div className="absolute inset-0 bg-blue-500 blur-xl opacity-30 rounded-full"></div>
+                <Youtube className="h-9 w-9 text-blue-400 relative z-10" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight">
+                <span className="gradient-text" style={{ 
+                  backgroundImage: 'linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))',
+                  backgroundSize: '200% 200%',
+                  animation: 'gradient-shift 3s ease infinite'
+                }}>
+                  Comment Insights
+                </span>
               </h1>
-              <Badge variant="secondary" className="hidden sm:inline-flex">
+              <Badge variant="secondary" className="hidden sm:inline-flex bg-blue-500/10 text-blue-300 border-blue-400/30 rounded-full px-3 text-xs font-medium">
                 Beta
               </Badge>
             </div>
             <div className="flex items-center gap-3">
               <SignedOut>
                 <SignInButton>
-                  <button className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors cursor-pointer">
+                  <button className="px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5">
                     Sign in
                   </button>
                 </SignInButton>
                 <SignUpButton>
-                  <button className="px-4 py-2 text-sm font-medium bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all shadow-sm hover:shadow-md cursor-pointer">
+                  <button className="px-6 py-2.5 text-sm font-semibold bg-gradient-to-r from-blue-500 to-purple-500 text-white hover:from-blue-400 hover:to-purple-400 transition-all cursor-pointer rounded-xl shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30">
                     Get started
                   </button>
                 </SignUpButton>
               </SignedOut>
               <SignedIn>
                 {usage ? (
-                  <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm transition-all ${
+                  <div className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                     usage.is_unlimited 
-                      ? 'bg-gradient-to-r from-amber-100 to-yellow-100 border border-amber-200' 
+                      ? 'bg-purple-500/10 border border-purple-400/30' 
                       : usage.remaining <= 1 
-                        ? 'bg-red-50 border border-red-200' 
-                        : 'bg-slate-100'
+                        ? 'bg-red-500/10 border border-red-400/30' 
+                        : 'bg-blue-500/10 border border-blue-400/30'
                   }`}>
                     {usage.is_unlimited ? (
                       <>
-                        <Zap className="h-3.5 w-3.5 text-amber-500" />
-                        <span className="text-amber-700 font-medium">Unlimited</span>
+                        <Zap className="h-4 w-4 text-purple-400" />
+                        <span className="text-purple-300">Unlimited</span>
                       </>
                     ) : (
                       <>
-                        <Sparkles className={`h-3.5 w-3.5 ${usage.remaining <= 1 ? 'text-red-500' : 'text-purple-500'}`} />
-                        <span className={usage.remaining <= 1 ? 'text-red-600' : 'text-slate-600'}>
-                          <span className={`font-semibold ${usage.remaining <= 1 ? 'text-red-600' : 'text-purple-600'}`}>
-                            {usage.remaining}
-                          </span>
-                          <span className="text-slate-400">/{usage.limit} left</span>
+                        <Sparkles className={`h-4 w-4 ${usage.remaining <= 1 ? 'text-red-400' : 'text-blue-400'}`} />
+                        <span className={usage.remaining <= 1 ? 'text-red-300' : 'text-blue-300'}>
+                          <span className="font-bold">{usage.remaining}</span>
+                          <span className="text-gray-500 mx-1">/</span>
+                          <span className="text-gray-500">{usage.limit}</span>
                         </span>
                       </>
                     )}
                   </div>
                 ) : (
-                  <div className="text-xs text-slate-500">Loading...</div>
+                  <div className="text-xs text-gray-500">Loading...</div>
                 )}
                 <UserButton 
                   appearance={{
                     elements: {
-                      avatarBox: "w-9 h-9 ring-2 ring-purple-200 ring-offset-2"
+                      avatarBox: "w-9 h-9 ring-2 ring-blue-400/40 ring-offset-2 ring-offset-[#0a0f1a]"
                     }
                   }}
                 />
@@ -237,45 +245,52 @@ export default function Home() {
         {!analysisData ? (
           <>
             {/* Hero Section */}
-            <div className="max-w-3xl mx-auto text-center mb-12">
-              <Badge className="mb-4" variant="secondary">
-                🚀 AI-Powered Analysis
+            <div className="max-w-4xl mx-auto text-center mb-16">
+              <Badge className="mb-8 animate-in-1 bg-blue-500/10 text-blue-300 border-blue-400/30 rounded-full px-4 py-1.5 text-sm font-medium" variant="secondary">
+                AI-Powered Analysis
               </Badge>
-              <h2 className="text-5xl font-bold mb-6 bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-                Turn Comments into
-                <br />
-                Actionable Improvements
+              <h2 className="text-6xl md:text-7xl font-bold mb-6 animate-in-2 leading-tight">
+                <span className="block gradient-text" style={{ 
+                  backgroundImage: 'linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%), hsl(185 80% 55%))',
+                  backgroundSize: '200% 200%',
+                  animation: 'gradient-shift 5s ease infinite'
+                }}>
+                  Transform Comments
+                </span>
+                <span className="block text-gray-300 mt-3">
+                  Into Insights
+                </span>
               </h2>
-              <p className="text-xl text-muted-foreground mb-8">
-                Get concrete, AI-powered recommendations from your YouTube comments.
-                Know exactly what to improve in your next video.
+              <p className="text-xl text-gray-400 mb-12 animate-in-3 max-w-2xl mx-auto leading-relaxed">
+                Get actionable feedback from your YouTube audience. 
+                Understand sentiment, discover patterns, and improve your content.
               </p>
 
               {/* Input Section */}
-              <div className="flex gap-2 max-w-2xl mx-auto mb-4">
+              <div className="flex gap-3 max-w-3xl mx-auto mb-8 animate-in-4">
                 <Input
                   type="text"
-                  placeholder="Paste your YouTube video URL here..."
+                  placeholder="Paste YouTube video URL..."
                   value={videoUrl}
                   onChange={(e) => setVideoUrl(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-                  className="h-12 text-base"
+                  className="h-14 text-base bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-2xl transition-all duration-300 hover:bg-white/8 focus:bg-white/8 shadow-lg"
                   disabled={loading}
                 />
                 <Button
                   onClick={handleAnalyze}
                   disabled={loading}
                   size="lg"
-                  className="px-8"
+                  className="px-10 h-14 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-400 hover:to-purple-400 text-white font-semibold text-base rounded-2xl transition-all duration-300 shadow-lg shadow-blue-500/30 hover:shadow-xl hover:shadow-blue-500/40"
                 >
                   {loading ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                       Analyzing
                     </>
                   ) : (
                     <>
-                      <Search className="mr-2 h-4 w-4" />
+                      <Search className="mr-2 h-5 w-5" />
                       Analyze
                     </>
                   )}
@@ -283,97 +298,123 @@ export default function Home() {
               </div>
 
               {error && (
-                <p className="text-sm text-destructive mb-4">{error}</p>
-              )}
-
-              {loading && (
-                <div className="text-sm text-muted-foreground">
-                  <Loader2 className="inline-block mr-2 h-4 w-4 animate-spin" />
-                  {loadingStep || "Processing..."}
+                <div className="border border-red-400/30 bg-red-500/10 p-4 mb-6 max-w-2xl mx-auto rounded-2xl backdrop-blur-xl">
+                  <p className="text-sm text-red-300 font-medium">
+                    {error}
+                  </p>
                 </div>
               )}
 
-              <p className="text-sm text-muted-foreground">
+              {loading && (
+                <div className="border border-blue-400/30 bg-blue-500/10 p-4 mb-6 max-w-2xl mx-auto rounded-2xl backdrop-blur-xl">
+                  <div className="text-sm text-blue-300 flex items-center gap-3 font-medium">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>{loadingStep || "Processing..."}</span>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-sm text-gray-500">
                 {isSignedIn 
-                  ? "Try it with any public YouTube video. Analysis takes 15-30 seconds."
-                  : "Sign in to analyze YouTube videos. Free users get 5 analyses."}
+                  ? "Analysis typically takes 15-30 seconds • Works with any public YouTube video"
+                  : "Sign in to get started • Free users get 5 analyses"}
               </p>
             </div>
 
             {/* Features Grid */}
-            <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto mb-16">
-              <Card className="border-2 hover:border-primary/50 transition-colors">
-                <CardHeader>
-                  <div className="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center mb-4">
-                    <TrendingUp className="h-6 w-6 text-blue-600" />
+            <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto mb-20">
+              <Card className="glass border-white/10 hover:border-blue-400/30 hover:bg-white/5 transition-all duration-300 animate-in-2 group rounded-3xl overflow-hidden">
+                <CardHeader className="p-8">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+                    <TrendingUp className="h-8 w-8 text-blue-400" />
                   </div>
-                  <CardTitle className="text-lg">Sentiment Analysis</CardTitle>
-                  <CardDescription>
-                    Understand the overall mood of your audience with detailed sentiment breakdowns
+                  <CardTitle className="text-xl mb-3 font-bold">
+                    Sentiment Analysis
+                  </CardTitle>
+                  <CardDescription className="text-gray-400 leading-relaxed">
+                    Understand the overall mood of your audience with detailed sentiment breakdowns and insights
                   </CardDescription>
                 </CardHeader>
               </Card>
 
-              <Card className="border-2 hover:border-primary/50 transition-colors">
-                <CardHeader>
-                  <div className="w-12 h-12 rounded-lg bg-purple-100 flex items-center justify-center mb-4">
-                    <CheckCircle2 className="h-6 w-6 text-purple-600" />
+              <Card className="glass border-white/10 hover:border-purple-400/30 hover:bg-white/5 transition-all duration-300 animate-in-3 group rounded-3xl overflow-hidden">
+                <CardHeader className="p-8">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+                    <CheckCircle2 className="h-8 w-8 text-purple-400" />
                   </div>
-                  <CardTitle className="text-lg">Action Items</CardTitle>
-                  <CardDescription>
+                  <CardTitle className="text-xl mb-3 font-bold">
+                    Action Items
+                  </CardTitle>
+                  <CardDescription className="text-gray-400 leading-relaxed">
                     Get specific, prioritized recommendations on what to improve in your content
                   </CardDescription>
                 </CardHeader>
               </Card>
 
-              <Card className="border-2 hover:border-primary/50 transition-colors">
-                <CardHeader>
-                  <div className="w-12 h-12 rounded-lg bg-pink-100 flex items-center justify-center mb-4">
-                    <MessageSquare className="h-6 w-6 text-pink-600" />
+              <Card className="glass border-white/10 hover:border-cyan-400/30 hover:bg-white/5 transition-all duration-300 animate-in-4 group rounded-3xl overflow-hidden">
+                <CardHeader className="p-8">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300">
+                    <MessageSquare className="h-8 w-8 text-cyan-400" />
                   </div>
-                  <CardTitle className="text-lg">Smart Filtering</CardTitle>
-                  <CardDescription>
-                    Browse comments with intelligent filters to find what matters most
+                  <CardTitle className="text-xl mb-3 font-bold">
+                    Smart Filtering
+                  </CardTitle>
+                  <CardDescription className="text-gray-400 leading-relaxed">
+                    Browse comments with intelligent filters to find what matters most to your audience
                   </CardDescription>
                 </CardHeader>
               </Card>
             </div>
 
             {/* Example Section */}
-            <div className="max-w-4xl mx-auto">
-              <Card className="bg-gradient-to-br from-blue-50 to-purple-50 border-2">
-                <CardHeader>
-                  <CardTitle>See it in action</CardTitle>
-                  <CardDescription>
-                    Try analyzing a popular tech video to see the kind of insights you'll get
+            <div className="max-w-5xl mx-auto animate-in-5">
+              <Card className="glass border-white/10 rounded-3xl overflow-hidden">
+                <CardHeader className="p-8 border-b border-white/5">
+                  <CardTitle className="text-2xl mb-2 font-bold">
+                    See it in action
+                  </CardTitle>
+                  <CardDescription className="text-gray-400 text-base">
+                    Example insights from a typical video analysis
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
-                      <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                <CardContent className="p-8">
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-4 p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-blue-400/30 hover:bg-white/8 transition-all duration-300">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center flex-shrink-0">
+                        <CheckCircle2 className="h-5 w-5 text-blue-400" />
+                      </div>
                       <div>
-                        <p className="font-medium">Improve audio quality</p>
-                        <p className="text-sm text-muted-foreground">
-                          Multiple viewers mentioned background noise. Consider using a better microphone.
+                        <p className="font-semibold text-white mb-1">
+                          Improve audio quality
+                        </p>
+                        <p className="text-sm text-gray-400 leading-relaxed">
+                          Multiple viewers mentioned background noise. Consider using a better microphone or noise reduction software.
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
-                      <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex items-start gap-4 p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-purple-400/30 hover:bg-white/8 transition-all duration-300">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center flex-shrink-0">
+                        <CheckCircle2 className="h-5 w-5 text-purple-400" />
+                      </div>
                       <div>
-                        <p className="font-medium">Add timestamps</p>
-                        <p className="text-sm text-muted-foreground">
-                          Viewers want to jump to specific sections. Add chapter markers.
+                        <p className="font-semibold text-white mb-1">
+                          Add timestamps
+                        </p>
+                        <p className="text-sm text-gray-400 leading-relaxed">
+                          Viewers want to jump to specific sections. Add chapter markers to improve navigation.
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
-                      <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex items-start gap-4 p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-cyan-400/30 hover:bg-white/8 transition-all duration-300">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center flex-shrink-0">
+                        <CheckCircle2 className="h-5 w-5 text-cyan-400" />
+                      </div>
                       <div>
-                        <p className="font-medium">Slow down explanations</p>
-                        <p className="text-sm text-muted-foreground">
-                          Beginners found the pace too fast. Consider adding more pauses.
+                        <p className="font-semibold text-white mb-1">
+                          Slow down explanations
+                        </p>
+                        <p className="text-sm text-gray-400 leading-relaxed">
+                          Beginners found the pace too fast. Consider adding more pauses and breaking down complex topics.
                         </p>
                       </div>
                     </div>
@@ -414,16 +455,22 @@ export default function Home() {
       {/* Credit Used Notification Toast */}
       {creditUsedNotification && usage && (
         <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300">
-          <div className="bg-white rounded-lg shadow-lg border border-slate-200 px-4 py-3 flex items-center gap-3">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-              usage.remaining <= 1 ? 'bg-red-100' : 'bg-purple-100'
+          <div className={`glass px-6 py-4 flex items-center gap-3 rounded-2xl border ${
+            usage.remaining <= 1 
+              ? 'border-red-400/30 shadow-lg shadow-red-500/20' 
+              : 'border-blue-400/30 shadow-lg shadow-blue-500/20'
+          }`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+              usage.remaining <= 1 ? 'bg-red-500/20' : 'bg-blue-500/20'
             }`}>
-              <Sparkles className={`h-4 w-4 ${usage.remaining <= 1 ? 'text-red-500' : 'text-purple-500'}`} />
+              <Sparkles className={`h-5 w-5 ${usage.remaining <= 1 ? 'text-red-400' : 'text-blue-400'}`} />
             </div>
             <div>
-              <p className="text-sm font-medium text-slate-900">1 credit used</p>
-              <p className={`text-xs ${usage.remaining <= 1 ? 'text-red-600' : 'text-slate-500'}`}>
-                {usage.remaining} credit{usage.remaining !== 1 ? 's' : ''} remaining
+              <p className={`text-sm font-semibold ${usage.remaining <= 1 ? 'text-red-300' : 'text-blue-300'}`}>
+                1 credit used
+              </p>
+              <p className={`text-xs ${usage.remaining <= 1 ? 'text-red-400' : 'text-gray-400'}`}>
+                {usage.remaining} remaining
               </p>
             </div>
           </div>
@@ -431,11 +478,11 @@ export default function Home() {
       )}
 
       {/* Footer */}
-      <footer className="border-t mt-20">
-        <div className="container mx-auto px-4 py-8">
-          <div className="text-center text-sm text-muted-foreground">
-            <p>Built for YouTube creators who want to improve their content</p>
-            <p className="mt-2">Powered by Claude AI & YouTube Data API</p>
+      <footer className="border-t border-white/5 mt-32">
+        <div className="container mx-auto px-6 py-12">
+          <div className="text-center text-sm text-gray-500">
+            <p className="mb-2">Built for YouTube creators who want to improve</p>
+            <p className="text-gray-600">Powered by Llama 4 Maverick & YouTube Data API</p>
           </div>
         </div>
       </footer>
