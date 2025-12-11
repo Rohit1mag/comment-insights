@@ -14,7 +14,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from io import BytesIO
 
 # Import from local module (same directory)
 from fetch_comments import get_youtube_service, get_video_comments, get_video_details
@@ -33,6 +41,7 @@ app = FastAPI(title="YouTube Comment Insights API")
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
 ANALYSIS_LIMIT = 8
 UNLIMITED_USERS = ["rohitkota4@gmail.com"]
+CUSTOM_LIMITS = {"rkdscnd@gmail.com": 100}  # Custom limits for specific users
 
 
 def get_current_month() -> str:
@@ -148,8 +157,11 @@ def check_usage_limit(email: Optional[str]) -> tuple[bool, int]:
     if email in UNLIMITED_USERS:
         return True, -1  # -1 indicates unlimited
     
+    # Check for custom limits
+    user_limit = CUSTOM_LIMITS.get(email, ANALYSIS_LIMIT)
+    
     current_usage = get_user_usage(email)
-    remaining = max(0, ANALYSIS_LIMIT - current_usage)
+    remaining = max(0, user_limit - current_usage)
     return remaining > 0, remaining
 
 # CORS middleware
@@ -191,11 +203,21 @@ class ActionItem(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     video_id: str
+    video_title: str
     total_comments: int
     summary: str
     sentiment: Dict[str, int]
     action_items: List[ActionItem]
     comments: List[Comment]
+
+
+class PDFRequest(BaseModel):
+    video_id: str
+    video_title: str
+    total_comments: int
+    summary: str
+    sentiment: Dict[str, int]
+    action_items: List[ActionItem]
 
 
 def extract_video_id(url: str) -> str:
@@ -459,6 +481,171 @@ def assign_sentiments_to_comments(comments: List[Dict], sentiment_counts: Dict[s
     return result
 
 
+def generate_pdf_report(
+    video_id: str,
+    video_title: str,
+    total_comments: int,
+    summary: str,
+    sentiment: Dict[str, int],
+    action_items: List[ActionItem]
+) -> BytesIO:
+    """Generate a PDF report from analysis results."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    
+    # Container for the 'Flowable' objects
+    story = []
+    
+    # Define styles
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=30,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=18,
+        textColor=colors.HexColor('#3b82f6'),
+        spaceAfter=12,
+        spaceBefore=20,
+        fontName='Helvetica-Bold'
+    )
+    
+    subheading_style = ParagraphStyle(
+        'CustomSubheading',
+        parent=styles['Heading3'],
+        fontSize=14,
+        textColor=colors.HexColor('#6366f1'),
+        spaceAfter=10,
+        spaceBefore=15,
+        fontName='Helvetica-Bold'
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=11,
+        textColor=colors.HexColor('#1f2937'),
+        spaceAfter=12,
+        alignment=TA_JUSTIFY,
+        leading=14
+    )
+    
+    # Title page
+    story.append(Spacer(1, 1*inch))
+    story.append(Paragraph("YouTube Comment Analysis Report", title_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    if video_title:
+        story.append(Paragraph(f"<b>Video:</b> {video_title}", styles['Normal']))
+        story.append(Spacer(1, 0.2*inch))
+    
+    story.append(Paragraph(f"<b>Video ID:</b> {video_id}", styles['Normal']))
+    story.append(Paragraph(f"<b>Total Comments Analyzed:</b> {total_comments}", styles['Normal']))
+    story.append(Paragraph(f"<b>Generated:</b> {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", styles['Normal']))
+    story.append(PageBreak())
+    
+    # Summary Section
+    story.append(Paragraph("Summary", heading_style))
+    
+    # Parse summary to handle markdown-style formatting
+    summary_paragraphs = summary.split('\n\n')
+    for para in summary_paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        
+        # Check if it's a heading (starts with ** and ends with **)
+        heading_match = re.match(r'^\*\*(.*?):\*\*', para)
+        if heading_match:
+            heading_text = heading_match.group(1)
+            content = para.replace(f'**{heading_text}:**', '').strip()
+            story.append(Paragraph(f"<b>{heading_text}:</b>", subheading_style))
+            if content:
+                story.append(Paragraph(content, normal_style))
+        else:
+            # Remove markdown bold markers
+            para_clean = para.replace('**', '')
+            story.append(Paragraph(para_clean, normal_style))
+    
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Sentiment Breakdown Section
+    story.append(Paragraph("Sentiment Breakdown", heading_style))
+    
+    total_sentiment = sum(sentiment.values())
+    if total_sentiment > 0:
+        sentiment_data = [
+            ['Sentiment', 'Count', 'Percentage'],
+            ['Positive', str(sentiment.get('positive', 0)), f"{(sentiment.get('positive', 0) / total_sentiment * 100):.1f}%"],
+            ['Neutral', str(sentiment.get('neutral', 0)), f"{(sentiment.get('neutral', 0) / total_sentiment * 100):.1f}%"],
+            ['Negative', str(sentiment.get('negative', 0)), f"{(sentiment.get('negative', 0) / total_sentiment * 100):.1f}%"],
+        ]
+        
+        sentiment_table = Table(sentiment_data, colWidths=[2*inch, 1.5*inch, 1.5*inch])
+        sentiment_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('FONTSIZE', (0, 1), (-1, -1), 11),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f3f4f6')]),
+        ]))
+        story.append(sentiment_table)
+    else:
+        story.append(Paragraph("No sentiment data available.", normal_style))
+    
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Action Items Section
+    story.append(Paragraph("Recommendations", heading_style))
+    
+    if action_items and len(action_items) > 0:
+        for idx, item in enumerate(action_items, 1):
+            # Impact color mapping (using color names instead of hex codes for ReportLab)
+            impact_colors = {
+                'High': '#ef4444',
+                'Medium': '#f59e0b',
+                'Low': '#10b981'
+            }
+            impact_color = impact_colors.get(item.impact, '#6b7280')
+            
+            story.append(Spacer(1, 0.1*inch))
+            story.append(Paragraph(
+                f"<b>{idx}. {item.title}</b> <font color='{impact_color}'>[{item.impact} Impact]</font>",
+                subheading_style
+            ))
+            story.append(Paragraph(item.description, normal_style))
+            story.append(Spacer(1, 0.15*inch))
+    else:
+        story.append(Paragraph("No specific recommendations identified from the comments.", normal_style))
+    
+    # Footer note
+    story.append(Spacer(1, 0.5*inch))
+    story.append(Paragraph(
+        "<i>Report generated by YouTube Comment Insights</i>",
+        ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.grey, alignment=TA_CENTER)
+    ))
+    
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
 @app.get("/")
 async def root():
     return {"message": "YouTube Comment Insights API", "status": "running"}
@@ -469,13 +656,16 @@ async def get_usage(email: str) -> UsageResponse:
     """Get usage statistics for a user."""
     is_unlimited = email in UNLIMITED_USERS
     used = get_user_usage(email)
-    remaining = -1 if is_unlimited else max(0, ANALYSIS_LIMIT - used)
+    
+    # Get the user's limit (custom or default)
+    user_limit = CUSTOM_LIMITS.get(email, ANALYSIS_LIMIT)
+    remaining = -1 if is_unlimited else max(0, user_limit - used)
     
     return UsageResponse(
         email=email,
         used=used,
         remaining=remaining,
-        limit=ANALYSIS_LIMIT,
+        limit=user_limit,
         is_unlimited=is_unlimited
     )
 
@@ -493,9 +683,10 @@ async def analyze_video(request: AnalyzeRequest):
         
         can_analyze, remaining = check_usage_limit(request.user_email)
         if not can_analyze:
+            user_limit = CUSTOM_LIMITS.get(request.user_email, ANALYSIS_LIMIT)
             raise HTTPException(
                 status_code=429, 
-                detail=f"You've reached your limit of {ANALYSIS_LIMIT} free analyses. Contact support for more access."
+                detail=f"You've reached your limit of {user_limit} analyses. Contact support for more access."
             )
         
         # Extract video ID
@@ -527,6 +718,7 @@ async def analyze_video(request: AnalyzeRequest):
         
         return AnalyzeResponse(
             video_id=video_id,
+            video_title=video_title,
             total_comments=len(comments),
             summary=summary,
             sentiment=sentiment,
@@ -547,6 +739,47 @@ async def analyze_video(request: AnalyzeRequest):
         raise HTTPException(
             status_code=500, 
             detail=f"An error occurred: {str(e)}. Please check your API keys and try again."
+        )
+
+
+@app.post("/analyze/pdf")
+async def download_pdf_report(request: PDFRequest):
+    """Generate and download PDF report from analysis results."""
+    try:
+        # Generate PDF from provided analysis data
+        pdf_buffer = generate_pdf_report(
+            video_id=request.video_id,
+            video_title=request.video_title,
+            total_comments=request.total_comments,
+            summary=request.summary,
+            sentiment=request.sentiment,
+            action_items=request.action_items
+        )
+        
+        # Read PDF content
+        pdf_content = pdf_buffer.read()
+        
+        # Return PDF as response with proper headers
+        filename = f"youtube_analysis_{request.video_id}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return Response(
+            content=pdf_content,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "application/pdf",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+        )
+    
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error generating PDF: {error_trace}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred generating PDF: {str(e)}"
         )
 
 

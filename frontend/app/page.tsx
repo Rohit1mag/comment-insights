@@ -204,10 +204,8 @@ export default function Home() {
                 {usage ? (
                   <div className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                     usage.is_unlimited 
-                      ? 'bg-purple-500/10 border border-purple-400/30' 
-                      : usage.remaining <= 1 
-                        ? 'bg-red-500/10 border border-red-400/30' 
-                        : 'bg-blue-500/10 border border-blue-400/30'
+                      ? 'bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-400/30' 
+                      : 'bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-400/30'
                   }`}>
                     {usage.is_unlimited ? (
                       <>
@@ -216,8 +214,8 @@ export default function Home() {
                       </>
                     ) : (
                       <>
-                        <Sparkles className={`h-4 w-4 ${usage.remaining <= 1 ? 'text-red-400' : 'text-blue-400'}`} />
-                        <span className={usage.remaining <= 1 ? 'text-red-300' : 'text-blue-300'}>
+                        <Sparkles className="h-4 w-4 text-blue-400" />
+                        <span className="text-blue-300">
                           <span className="font-bold">{usage.remaining}</span>
                           <span className="text-gray-500 mx-1">/</span>
                           <span className="text-gray-500">{usage.limit}</span>
@@ -424,53 +422,23 @@ export default function Home() {
         </div>
           </>
         ) : (
-          <div className="space-y-4">
-            {/* Credits used banner */}
-            {usage && !usage.is_unlimited && (
-              <div className="max-w-4xl mx-auto">
-                <div className={`flex items-center justify-between px-4 py-3 rounded-lg ${
-                  usage.remaining <= 1 
-                    ? 'bg-red-50 border border-red-200' 
-                    : 'bg-purple-50 border border-purple-200'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <Sparkles className={`h-4 w-4 ${usage.remaining <= 1 ? 'text-red-500' : 'text-purple-500'}`} />
-                    <span className={`text-sm font-medium ${usage.remaining <= 1 ? 'text-red-700' : 'text-purple-700'}`}>
-                      {usage.remaining === 0 
-                        ? "You've used all your free analyses" 
-                        : `${usage.remaining} analysis credit${usage.remaining !== 1 ? 's' : ''} remaining`}
-                    </span>
-                  </div>
-                  <span className="text-xs text-slate-500">
-                    {usage.used} of {usage.limit} used
-                  </span>
-                </div>
-              </div>
-            )}
-            <AnalysisResults data={analysisData} onNewAnalysis={() => setAnalysisData(null)} />
-          </div>
+          <AnalysisResults data={analysisData} onNewAnalysis={() => setAnalysisData(null)} />
         )}
       </main>
 
       {/* Credit Used Notification Toast */}
       {creditUsedNotification && usage && (
-        <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-5 fade-in duration-300">
-          <div className={`glass px-6 py-4 flex items-center gap-3 rounded-2xl border ${
-            usage.remaining <= 1 
-              ? 'border-red-400/30 shadow-lg shadow-red-500/20' 
-              : 'border-blue-400/30 shadow-lg shadow-blue-500/20'
-          }`}>
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-              usage.remaining <= 1 ? 'bg-red-500/20' : 'bg-blue-500/20'
-            }`}>
-              <Sparkles className={`h-5 w-5 ${usage.remaining <= 1 ? 'text-red-400' : 'text-blue-400'}`} />
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-5 fade-in duration-300">
+          <div className="glass px-6 py-4 flex items-center gap-3 rounded-2xl border border-blue-400/30 shadow-lg shadow-blue-500/20">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br from-blue-500/20 to-purple-500/20">
+              <Sparkles className="h-5 w-5 text-blue-400" />
             </div>
             <div>
-              <p className={`text-sm font-semibold ${usage.remaining <= 1 ? 'text-red-300' : 'text-blue-300'}`}>
+              <p className="text-sm font-semibold text-blue-300">
                 1 credit used
               </p>
-              <p className={`text-xs ${usage.remaining <= 1 ? 'text-red-400' : 'text-gray-400'}`}>
-                {usage.remaining} remaining
+              <p className="text-xs text-gray-400">
+                {usage.remaining} analysis credit{usage.remaining !== 1 ? 's' : ''} remaining
               </p>
             </div>
           </div>

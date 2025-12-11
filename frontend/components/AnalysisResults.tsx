@@ -18,6 +18,7 @@ import {
   Filter,
   X,
   MessageSquare,
+  Download,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 
@@ -31,6 +32,7 @@ interface Comment {
 
 interface AnalysisData {
   video_id: string;
+  video_title?: string;
   total_comments: number;
   summary: string;
   sentiment: {
@@ -61,6 +63,7 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
   const [sentimentFilter, setSentimentFilter] = useState<string[]>([]);
   const [minLikes, setMinLikes] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
+  const [isDownloading, setIsDownloading] = useState(false);
 
   // Prepare chart data
   const chartData = [
@@ -68,6 +71,72 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
     { name: "Neutral", value: data.sentiment.neutral, color: SENTIMENT_COLORS.neutral },
     { name: "Negative", value: data.sentiment.negative, color: SENTIMENT_COLORS.negative },
   ];
+
+  const handleDownloadPDF = async () => {
+    setIsDownloading(true);
+    try {
+      // Use same API URL detection as main page
+      const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
+      const isDev = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+      const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
+      
+      const response = await fetch(`${apiUrl}/analyze/pdf`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          video_id: data.video_id,
+          video_title: data.video_title || `YouTube Video ${data.video_id}`,
+          total_comments: data.total_comments,
+          summary: data.summary,
+          sentiment: data.sentiment,
+          action_items: data.action_items,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = "Failed to generate PDF";
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.detail || errorData.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Check if response is actually a PDF
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/pdf")) {
+        const errorText = await response.text();
+        console.error("Unexpected response type:", contentType, errorText);
+        throw new Error("Server returned non-PDF response");
+      }
+
+      const blob = await response.blob();
+      
+      // Verify blob is not empty
+      if (blob.size === 0) {
+        throw new Error("PDF file is empty");
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `youtube_analysis_${data.video_id}_${new Date().toISOString().split("T")[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error: any) {
+      console.error("Error downloading PDF:", error);
+      alert(`Failed to download PDF: ${error.message || "Please try again."}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   // Filter comments
   const filteredComments = data.comments.filter((comment) => {
@@ -101,14 +170,24 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
     <div className="max-w-7xl mx-auto relative z-10">
       {/* Header */}
       <div className="mb-12 animate-in-1">
-        <Button 
-          variant="ghost" 
-          onClick={onNewAnalysis} 
-          className="mb-8 glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 hover:text-white transition-all duration-300 rounded-xl px-5 py-2.5"
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Analyze Another Video
-        </Button>
+        <div className="flex items-center justify-between mb-8">
+          <Button 
+            variant="ghost" 
+            onClick={onNewAnalysis} 
+            className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 hover:text-white transition-all duration-300 rounded-xl px-5 py-2.5"
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Analyze Another Video
+          </Button>
+          <Button
+            onClick={handleDownloadPDF}
+            disabled={isDownloading}
+            className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-white bg-gradient-to-r from-blue-500/20 to-purple-500/20 hover:from-blue-500/30 hover:to-purple-500/30 transition-all duration-300 rounded-xl px-6 py-2.5 font-medium"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            {isDownloading ? "Generating PDF..." : "Download PDF Report"}
+          </Button>
+        </div>
         <h2 className="text-5xl font-bold mb-4 gradient-text" style={{ 
           backgroundImage: 'linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))',
           backgroundSize: '200% 200%',
