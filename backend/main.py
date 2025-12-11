@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Import from local module (same directory)
-from fetch_comments import get_youtube_service, get_video_comments
+from fetch_comments import get_youtube_service, get_video_comments, get_video_details
 from together import Together
 
 # Load environment variables
@@ -31,7 +31,7 @@ app = FastAPI(title="YouTube Comment Insights API")
 
 # Usage tracking
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
-ANALYSIS_LIMIT = 5
+ANALYSIS_LIMIT = 8
 UNLIMITED_USERS = ["rohitkota4@gmail.com"]
 
 
@@ -220,7 +220,7 @@ def extract_video_id(url: str) -> str:
     raise ValueError("Invalid YouTube URL")
 
 
-def get_ai_summary(comments: List[Dict]) -> str:
+def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
     """Get AI summary of comments."""
     api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
@@ -245,13 +245,29 @@ def get_ai_summary(comments: List[Dict]) -> str:
         for i, c in enumerate(sampled_comments)
     ])
     
-    prompt = f"""Analyze these YouTube comments and provide a representative summary in one paragraph for the creator. Be accurate and concise about the overall sentiment. 
+    # Build context about the video
+    video_context = ""
+    if video_title:
+        video_context += f"Video Title: {video_title}\n\n"
+    if video_description:
+        video_context += f"Video Description: {video_description}\n\n"
+    
+    prompt = f"""Analyze these YouTube comments and provide a representative summary for the creator. Follow this exact format and style:
 
-In another paragraph, give a summary of the feedback (both good and bad) that commenters have for the creator only if present. The feedback should effectively capture the positives and negatives in a proportion that is representative of the comments.
+**Overall Sentiment:**
+[Write one paragraph that accurately and concisely summarizes the overall sentiment of the comments. Be specific about what commenters are saying and feeling.]
 
-If no meaningful feedback is present, say so.
+**Feedback Summary:**
+[Write one paragraph summarizing the feedback (both positive and negative) that commenters have for the creator. If feedback is present, capture the positives and negatives in proportions representative of the comments. If no meaningful feedback is present, write "No specific feedback was provided by commenters."]
 
-Comments:
+Style guidelines:
+- Use clear, professional language
+- Be specific and concrete (mention what commenters actually said)
+- Maintain a balanced, objective tone
+- Keep paragraphs concise but informative
+- Use present tense when describing commenter sentiments
+
+{video_context}Comments:
 {comments_text}"""
     
     response = client.chat.completions.create(
@@ -263,7 +279,7 @@ Comments:
     return response.choices[0].message.content
 
 
-def get_sentiment_analysis(comments: List[Dict]) -> Dict[str, int]:
+def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_description: str = "") -> Dict[str, int]:
     """Get sentiment breakdown of comments."""
     api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
@@ -288,6 +304,13 @@ def get_sentiment_analysis(comments: List[Dict]) -> Dict[str, int]:
         for i, c in enumerate(sampled_comments)
     ])
     
+    # Build context about the video
+    video_context = ""
+    if video_title:
+        video_context += f"Video Title: {video_title}\n\n"
+    if video_description:
+        video_context += f"Video Description: {video_description}\n\n"
+    
     prompt = f"""Analyze the sentiment of these YouTube comments and categorize each as "positive", "neutral", or "negative".
 
 Return ONLY a JSON object with this format:
@@ -297,7 +320,7 @@ Return ONLY a JSON object with this format:
   "negative": <number>
 }}
 
-Comments:
+{video_context}Comments:
 {comments_text}"""
     
     response = client.chat.completions.create(
@@ -321,7 +344,7 @@ Comments:
     return {"positive": 0, "neutral": 0, "negative": 0}
 
 
-def get_action_items(comments: List[Dict]) -> List[ActionItem]:
+def get_action_items(comments: List[Dict], video_title: str = "", video_description: str = "") -> List[ActionItem]:
     """Get actionable recommendations from comments."""
     api_key = os.getenv('TOGETHER_API_KEY')
     if not api_key:
@@ -346,6 +369,13 @@ def get_action_items(comments: List[Dict]) -> List[ActionItem]:
         for i, c in enumerate(sampled_comments)
     ])
     
+    # Build context about the video
+    video_context = ""
+    if video_title:
+        video_context += f"Video Title: {video_title}\n\n"
+    if video_description:
+        video_context += f"Video Description: {video_description}\n\n"
+    
     prompt = f"""Based on these YouTube comments, provide 3-5 specific, actionable recommendations for the creator to improve their next video.
 
 Return ONLY a JSON array with this format:
@@ -364,7 +394,7 @@ Focus on:
 - Prioritize by impact (what will make the biggest difference)
 - Things the creator can improve from the next video, because its useless giving them recommendation for a video already posted
 
-Comments:
+{video_context}Comments:
 {comments_text}"""
     
     response = client.chat.completions.create(
@@ -471,18 +501,22 @@ async def analyze_video(request: AnalyzeRequest):
         # Extract video ID
         video_id = extract_video_id(request.video_url)
         
-        # Fetch comments - production limit for quota management
+        # Fetch video details and comments - production limit for quota management
         # 1000 comments gives good coverage while managing API costs
         youtube = get_youtube_service()
+        video_details = get_video_details(youtube, video_id)
+        video_title = video_details.get('title', '')
+        video_description = video_details.get('description', '')
         comments = get_video_comments(youtube, video_id, max_results=1000, verbose=False)
         
         if not comments:
             raise HTTPException(status_code=404, detail="No comments found for this video")
         
         # Get AI analysis (parallel would be better, but keeping it simple)
-        summary = get_ai_summary(comments)
-        sentiment = get_sentiment_analysis(comments)
-        action_items = get_action_items(comments)
+        # Pass video context to help LLM provide better analysis
+        summary = get_ai_summary(comments, video_title, video_description)
+        sentiment = get_sentiment_analysis(comments, video_title, video_description)
+        action_items = get_action_items(comments, video_title, video_description)
         
         # Assign sentiments to comments
         comments_with_sentiment = assign_sentiments_to_comments(comments, sentiment)

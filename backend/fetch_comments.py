@@ -77,6 +77,39 @@ def get_youtube_service():
     return build('youtube', 'v3', developerKey=api_key)
 
 
+def get_video_details(youtube, video_id):
+    """
+    Fetch video title and description from YouTube API.
+    
+    Args:
+        youtube: YouTube API service object
+        video_id: YouTube video ID
+    
+    Returns:
+        Dictionary with 'title' and 'description' keys
+    """
+    try:
+        request = youtube.videos().list(
+            part='snippet',
+            id=video_id
+        )
+        response = request.execute()
+        
+        if not response.get('items'):
+            return {'title': '', 'description': ''}
+        
+        snippet = response['items'][0]['snippet']
+        return {
+            'title': snippet.get('title', ''),
+            'description': snippet.get('description', '')
+        }
+    except HttpError as e:
+        print(f"Error fetching video details: {e}")
+        return {'title': '', 'description': ''}
+    except Exception as e:
+        return {'title': '', 'description': ''}
+
+
 def get_video_comments(youtube, video_id, max_results=100, verbose=False):
     """
     Fetch comments from a YouTube video with pagination support.
