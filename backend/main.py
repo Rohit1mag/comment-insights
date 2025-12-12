@@ -39,7 +39,7 @@ app = FastAPI(title="YouTube Comment Insights API")
 
 # Usage tracking
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
-ANALYSIS_LIMIT = 8
+ANALYSIS_LIMIT = 10
 UNLIMITED_USERS = ["rohitkota4@gmail.com"]
 CUSTOM_LIMITS = {"rkdscnd@gmail.com": 100}  # Custom limits for specific users
 
@@ -309,6 +309,9 @@ def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_de
     
     client = Together(api_key=api_key)
     
+    # Store total comment count before sampling
+    total_comments = len(comments)
+    
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
     if len(comments) > 500:
@@ -358,7 +361,33 @@ Return ONLY a JSON object with this format:
     json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text)
     if json_match:
         try:
-            return json.loads(json_match.group())
+            sentiment_counts = json.loads(json_match.group())
+            
+            # Get sampled count and normalize LLM response first
+            sampled_count = len(sampled_comments)
+            llm_total = sum(sentiment_counts.values())
+            
+            # Scale sentiment counts directly to total_comments
+            # This ensures the pie chart always adds up to the total comment count
+            if llm_total > 0:
+                # Scale factor: total_comments / llm_total
+                # This scales from whatever the LLM returned to the total comment count
+                scale_factor = total_comments / llm_total
+                sentiment_counts = {
+                    "positive": round(sentiment_counts.get("positive", 0) * scale_factor),
+                    "neutral": round(sentiment_counts.get("neutral", 0) * scale_factor),
+                    "negative": round(sentiment_counts.get("negative", 0) * scale_factor)
+                }
+                
+                # Ensure total matches exactly (handle rounding differences)
+                total_sentiment = sum(sentiment_counts.values())
+                if total_sentiment != total_comments:
+                    diff = total_comments - total_sentiment
+                    # Add difference to the largest category
+                    max_key = max(sentiment_counts, key=sentiment_counts.get)
+                    sentiment_counts[max_key] += diff
+            
+            return sentiment_counts
         except json.JSONDecodeError:
             pass
     
