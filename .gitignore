@@ -83,3 +83,4 @@ htmlcov/
 
 # Usage tracking data
 backend/usage_data.json
+backend/subscriptions_data.json
