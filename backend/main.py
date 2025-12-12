@@ -12,10 +12,11 @@ from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
+import stripe
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -39,9 +40,29 @@ app = FastAPI(title="YouTube Comment Insights API")
 
 # Usage tracking
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
-ANALYSIS_LIMIT = 10
-UNLIMITED_USERS = ["rohitkota4@gmail.com"]
-CUSTOM_LIMITS = {"rkdscnd@gmail.com": 100}  # Custom limits for specific users
+SUBSCRIPTIONS_FILE = Path(__file__).parent / "subscriptions_data.json"
+
+# Stripe configuration
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")  # Pro tier price ID from Stripe dashboard
+
+# Tier definitions
+TIER_LIMITS = {
+    "FREE": 5,
+    "PRO": 15,
+    "UNLIMITED": -1  # -1 means unlimited
+}
+
+# User tier assignments (email -> tier name)
+USER_TIERS = {
+    "rohitkota4@gmail.com": "UNLIMITED",
+    # Add Pro users here as they subscribe
+    # "user@example.com": "PRO",
+}
+
+# Default tier for new users
+DEFAULT_TIER = "FREE"
 
 
 def get_current_month() -> str:
@@ -146,6 +167,28 @@ def increment_user_usage(email: str) -> int:
     return data[email]["used"]
 
 
+def load_subscriptions_data() -> Dict:
+    """Load subscription data from file."""
+    if SUBSCRIPTIONS_FILE.exists():
+        try:
+            with open(SUBSCRIPTIONS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def save_subscriptions_data(data: Dict) -> None:
+    """Save subscription data to file."""
+    with open(SUBSCRIPTIONS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def update_user_tier(email: str, tier: str) -> None:
+    """Update user's tier in USER_TIERS."""
+    USER_TIERS[email] = tier
+
+
 def check_usage_limit(email: Optional[str]) -> tuple[bool, int]:
     """
     Check if user can perform analysis.
@@ -154,11 +197,13 @@ def check_usage_limit(email: Optional[str]) -> tuple[bool, int]:
     if not email:
         return False, 0
     
-    if email in UNLIMITED_USERS:
-        return True, -1  # -1 indicates unlimited
+    # Get user's tier
+    tier = USER_TIERS.get(email, DEFAULT_TIER)
+    user_limit = TIER_LIMITS[tier]
     
-    # Check for custom limits
-    user_limit = CUSTOM_LIMITS.get(email, ANALYSIS_LIMIT)
+    # Unlimited tier
+    if user_limit == -1:
+        return True, -1  # -1 indicates unlimited
     
     current_usage = get_user_usage(email)
     remaining = max(0, user_limit - current_usage)
@@ -185,6 +230,7 @@ class UsageResponse(BaseModel):
     remaining: int  # -1 means unlimited
     limit: int
     is_unlimited: bool
+    tier: str
 
 
 class Comment(BaseModel):
@@ -683,11 +729,12 @@ async def root():
 @app.get("/usage/{email}")
 async def get_usage(email: str) -> UsageResponse:
     """Get usage statistics for a user."""
-    is_unlimited = email in UNLIMITED_USERS
-    used = get_user_usage(email)
+    # Get user's tier
+    tier = USER_TIERS.get(email, DEFAULT_TIER)
+    user_limit = TIER_LIMITS[tier]
+    is_unlimited = user_limit == -1
     
-    # Get the user's limit (custom or default)
-    user_limit = CUSTOM_LIMITS.get(email, ANALYSIS_LIMIT)
+    used = get_user_usage(email)
     remaining = -1 if is_unlimited else max(0, user_limit - used)
     
     return UsageResponse(
@@ -695,8 +742,156 @@ async def get_usage(email: str) -> UsageResponse:
         used=used,
         remaining=remaining,
         limit=user_limit,
-        is_unlimited=is_unlimited
+        is_unlimited=is_unlimited,
+        tier=tier
     )
+
+
+@app.get("/tier/{email}")
+async def get_user_tier(email: str):
+    """Get tier information for a user."""
+    tier = USER_TIERS.get(email, DEFAULT_TIER)
+    limit = TIER_LIMITS[tier]
+    return {
+        "tier": tier,
+        "limit": limit if limit != -1 else "unlimited",
+        "price": "$0" if tier == "FREE" else "$4.99" if tier == "PRO" else "Custom"
+    }
+
+
+class CheckoutRequest(BaseModel):
+    email: str
+    success_url: str
+    cancel_url: str
+
+
+@app.post("/create-checkout-session")
+async def create_checkout_session(request: CheckoutRequest):
+    """Create a Stripe checkout session for Pro subscription."""
+    if not STRIPE_PRICE_ID:
+        raise HTTPException(status_code=500, detail="Stripe price ID not configured")
+    
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            customer_email=request.email,
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price": STRIPE_PRICE_ID,
+                    "quantity": 1,
+                }
+            ],
+            mode="subscription",
+            success_url=request.success_url,
+            cancel_url=request.cancel_url,
+            metadata={
+                "user_email": request.email,
+            },
+        )
+        return {"checkout_url": checkout_session.url, "session_id": checkout_session.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {str(e)}")
+
+
+@app.post("/webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events."""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Missing stripe-signature header")
+    
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    
+    # Handle the event
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_email = session.get("metadata", {}).get("user_email")
+        customer_id = session.get("customer")
+        subscription_id = session.get("subscription")
+        
+        if user_email:
+            # Update user tier to PRO
+            update_user_tier(user_email, "PRO")
+            
+            # Save subscription data
+            subscriptions = load_subscriptions_data()
+            subscriptions[user_email] = {
+                "customer_id": customer_id,
+                "subscription_id": subscription_id,
+                "tier": "PRO",
+                "created_at": datetime.now().isoformat()
+            }
+            save_subscriptions_data(subscriptions)
+    
+    elif event["type"] == "customer.subscription.deleted":
+        subscription = event["data"]["object"]
+        customer_id = subscription.get("customer")
+        
+        # Find user by customer_id and downgrade to FREE
+        subscriptions = load_subscriptions_data()
+        for email, sub_data in subscriptions.items():
+            if sub_data.get("customer_id") == customer_id:
+                update_user_tier(email, "FREE")
+                # Remove subscription data
+                subscriptions.pop(email, None)
+                save_subscriptions_data(subscriptions)
+                break
+    
+    elif event["type"] == "customer.subscription.updated":
+        subscription = event["data"]["object"]
+        customer_id = subscription.get("customer")
+        status = subscription.get("status")
+        
+        # Update subscription status
+        subscriptions = load_subscriptions_data()
+        for email, sub_data in subscriptions.items():
+            if sub_data.get("customer_id") == customer_id:
+                if status in ["active", "trialing"]:
+                    update_user_tier(email, "PRO")
+                elif status in ["canceled", "unpaid", "past_due"]:
+                    update_user_tier(email, "FREE")
+                break
+    
+    return {"status": "success"}
+
+
+@app.get("/subscription-status/{email}")
+async def get_subscription_status(email: str):
+    """Get subscription status for a user."""
+    subscriptions = load_subscriptions_data()
+    subscription_data = subscriptions.get(email)
+    
+    if not subscription_data:
+        return {
+            "has_subscription": False,
+            "tier": USER_TIERS.get(email, DEFAULT_TIER)
+        }
+    
+    try:
+        subscription = stripe.Subscription.retrieve(subscription_data["subscription_id"])
+        return {
+            "has_subscription": True,
+            "tier": "PRO",
+            "status": subscription.status,
+            "current_period_end": subscription.current_period_end
+        }
+    except Exception:
+        return {
+            "has_subscription": False,
+            "tier": USER_TIERS.get(email, DEFAULT_TIER)
+        }
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -712,10 +907,11 @@ async def analyze_video(request: AnalyzeRequest):
         
         can_analyze, remaining = check_usage_limit(request.user_email)
         if not can_analyze:
-            user_limit = CUSTOM_LIMITS.get(request.user_email, ANALYSIS_LIMIT)
+            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+            user_limit = TIER_LIMITS[tier]
             raise HTTPException(
                 status_code=429, 
-                detail=f"You've reached your limit of {user_limit} analyses. Contact support for more access."
+                detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!"
             )
         
         # Extract video ID
@@ -742,8 +938,10 @@ async def analyze_video(request: AnalyzeRequest):
         comments_with_sentiment = assign_sentiments_to_comments(comments, sentiment)
         
         # Increment usage count after successful analysis
-        if request.user_email and request.user_email not in UNLIMITED_USERS:
-            increment_user_usage(request.user_email)
+        if request.user_email:
+            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+            if TIER_LIMITS[tier] != -1:  # Only increment if not unlimited
+                increment_user_usage(request.user_email)
         
         return AnalyzeResponse(
             video_id=video_id,

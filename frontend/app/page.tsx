@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, TrendingUp, MessageSquare, CheckCircle2, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
+import { Search, TrendingUp, MessageSquare, CheckCircle2, Loader2, Youtube, Sparkles, Zap, Check, Crown } from "lucide-react";
+import { loadStripe } from "@stripe/stripe-js";
 import {
   SignInButton,
   SignUpButton,
@@ -21,6 +22,7 @@ interface UsageData {
   remaining: number;
   limit: number;
   is_unlimited: boolean;
+  tier: string;
 }
 
 export default function Home() {
@@ -32,9 +34,13 @@ export default function Home() {
   const [loadingStep, setLoadingStep] = useState("");
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [creditUsedNotification, setCreditUsedNotification] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   // Get the user's primary email
   const userEmail = user?.primaryEmailAddress?.emailAddress;
+
+  // Initialize Stripe
+  const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "");
 
   // Fetch usage data when user signs in
   useEffect(() => {
@@ -69,6 +75,75 @@ export default function Home() {
     fetchUsage();
   }, [userEmail]);
 
+  // Handle Stripe redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("success") === "true") {
+      // Refresh usage data after successful subscription
+      if (userEmail) {
+        setTimeout(() => {
+          const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
+          const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+          const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
+          
+          fetch(`${apiUrl}/usage/${encodeURIComponent(userEmail)}`)
+            .then(res => res.json())
+            .then(data => setUsage(data))
+            .catch(console.error);
+        }, 2000);
+      }
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (params.get("canceled") === "true") {
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [userEmail]);
+
+  const handleCheckout = async () => {
+    if (!userEmail || !isSignedIn) {
+      setError("Please sign in to subscribe");
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setError("");
+
+    try {
+      const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
+      const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
+
+      const successUrl = `${window.location.origin}?success=true`;
+      const cancelUrl = `${window.location.origin}?canceled=true`;
+
+      const response = await fetch(`${apiUrl}/create-checkout-session`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: userEmail,
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to create checkout session");
+      }
+
+      const { checkout_url } = await response.json();
+      
+      // Redirect to Stripe Checkout
+      window.location.href = checkout_url;
+    } catch (err: any) {
+      setError(err.message || "Failed to start checkout. Please try again.");
+      setCheckoutLoading(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!videoUrl) {
       setError("Please enter a YouTube URL");
@@ -82,7 +157,7 @@ export default function Home() {
 
     // Check usage limit before making request
     if (usage && !usage.is_unlimited && usage.remaining <= 0) {
-      setError(`You've reached your limit of ${usage.limit} free analyses.`);
+      setError(`You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month!`);
       return;
     }
 
@@ -205,6 +280,8 @@ export default function Home() {
                   <div className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                     usage.is_unlimited 
                       ? 'bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-400/30' 
+                      : usage.tier === 'PRO'
+                      ? 'bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-400/30'
                       : 'bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-400/30'
                   }`}>
                     {usage.is_unlimited ? (
@@ -214,11 +291,16 @@ export default function Home() {
                       </>
                     ) : (
                       <>
-                        <Sparkles className="h-4 w-4 text-blue-400" />
-                        <span className="text-blue-300">
+                        <Sparkles className={`h-4 w-4 ${
+                          usage.tier === 'PRO' ? 'text-amber-400' : 'text-blue-400'
+                        }`} />
+                        <span className={usage.tier === 'PRO' ? 'text-amber-300' : 'text-blue-300'}>
                           <span className="font-bold">{usage.remaining}</span>
                           <span className="text-gray-500 mx-1">/</span>
                           <span className="text-gray-500">{usage.limit}</span>
+                          {usage.tier === 'PRO' && (
+                            <span className="ml-1.5 text-xs text-amber-400/70">Pro</span>
+                          )}
                         </span>
                       </>
                     )}
@@ -419,7 +501,146 @@ export default function Home() {
                   </div>
                 </CardContent>
               </Card>
-        </div>
+            </div>
+
+            {/* Pricing Section */}
+            <div className="max-w-6xl mx-auto mt-32 animate-in-5">
+              <div className="text-center mb-12">
+                <Badge className="mb-6 bg-blue-500/10 text-blue-300 border-blue-400/30 rounded-full px-4 py-1.5 text-sm font-medium" variant="secondary">
+                  Simple Pricing
+                </Badge>
+                <h2 className="text-5xl font-bold mb-4">
+                  <span className="gradient-text" style={{ 
+                    backgroundImage: 'linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))',
+                    backgroundSize: '200% 200%',
+                    animation: 'gradient-shift 5s ease infinite'
+                  }}>
+                    Choose Your Plan
+                  </span>
+                </h2>
+                <p className="text-xl text-gray-400 max-w-2xl mx-auto">
+                  Start free, upgrade when you need more analyses
+                </p>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+                {/* Free Tier */}
+                <Card className="glass border-white/10 hover:border-blue-400/30 transition-all duration-300 rounded-3xl overflow-hidden relative">
+                  <CardHeader className="p-8 border-b border-white/5">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center">
+                        <Sparkles className="h-6 w-6 text-blue-400" />
+                      </div>
+                      <div>
+                        <CardTitle className="text-2xl font-bold">Free</CardTitle>
+                        <CardDescription className="text-gray-400">Get started</CardDescription>
+                      </div>
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-5xl font-bold text-white">$0</span>
+                      <span className="text-gray-500">/month</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-8">
+                    <ul className="space-y-4 mb-8">
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300"><span className="font-semibold text-white">5 analyses</span> per month</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">AI-powered insights</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">Sentiment analysis</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">Action items</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">PDF reports</span>
+                      </li>
+                    </ul>
+                    <Button 
+                      className="w-full h-12 bg-white/5 hover:bg-white/10 text-white border border-white/10 hover:border-white/20 rounded-xl font-semibold transition-all"
+                      disabled
+                    >
+                      Current Plan
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                {/* Pro Tier */}
+                <Card className="glass border-amber-400/40 hover:border-amber-400/60 transition-all duration-300 rounded-3xl overflow-hidden relative shadow-lg shadow-amber-500/10">
+                  <div className="absolute top-0 right-0 bg-gradient-to-br from-amber-500 to-orange-500 text-white px-4 py-1 text-xs font-bold rounded-bl-2xl">
+                    POPULAR
+                  </div>
+                  <CardHeader className="p-8 border-b border-white/5">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center">
+                        <Crown className="h-6 w-6 text-amber-400" />
+                      </div>
+                      <div>
+                        <CardTitle className="text-2xl font-bold">Pro</CardTitle>
+                        <CardDescription className="text-amber-300/70">For serious creators</CardDescription>
+                      </div>
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-5xl font-bold text-white">$4.99</span>
+                      <span className="text-gray-500">/month</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-8">
+                    <ul className="space-y-4 mb-8">
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300"><span className="font-semibold text-white">15 analyses</span> per month</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">Everything in Free</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">Priority support</span>
+                      </li>
+                      <li className="flex items-start gap-3">
+                        <Check className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-300">Early access to features</span>
+                      </li>
+                    </ul>
+                    <Button 
+                      onClick={handleCheckout}
+                      disabled={checkoutLoading || !isSignedIn}
+                      className="w-full h-12 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-white rounded-xl font-semibold transition-all shadow-lg shadow-amber-500/25 hover:shadow-xl hover:shadow-amber-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {checkoutLoading ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Loading...
+                        </>
+                      ) : !isSignedIn ? (
+                        "Sign in to Subscribe"
+                      ) : usage?.tier === "PRO" ? (
+                        "Current Plan"
+                      ) : (
+                        "Subscribe Now"
+                      )}
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* FAQ or additional info */}
+              <div className="mt-12 text-center">
+                <p className="text-gray-500 text-sm">
+                  Need more than 15 analyses? <a href="mailto:support@example.com" className="text-blue-400 hover:text-blue-300 underline">Contact us</a> for custom pricing
+                </p>
+              </div>
+            </div>
           </>
         ) : (
           <AnalysisResults data={analysisData} onNewAnalysis={() => setAnalysisData(null)} />
