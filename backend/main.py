@@ -27,6 +27,7 @@ from io import BytesIO
 
 # Import from local module (same directory)
 from fetch_comments import get_youtube_service, get_video_comments, get_video_details
+from fetch_maps_reviews import get_place_reviews, extract_place_id_from_url
 from together import Together
 
 # Load environment variables
@@ -51,12 +52,14 @@ STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")  # Pro tier price ID from Stripe 
 TIER_LIMITS = {
     "FREE": 5,
     "PRO": 15,
+    "PREMIUM": 1000,
     "UNLIMITED": -1  # -1 means unlimited
 }
 
 # User tier assignments (email -> tier name)
 USER_TIERS = {
     "rohitkota4@gmail.com": "UNLIMITED",
+    "rkdscnd@gmail.com": "PREMIUM",
     # Add Pro users here as they subscribe
     # "user@example.com": "PRO",
 }
@@ -224,6 +227,11 @@ class AnalyzeRequest(BaseModel):
     user_email: Optional[str] = None
 
 
+class AnalyzeMapsRequest(BaseModel):
+    maps_url: str
+    user_email: Optional[str] = None
+
+
 class UsageResponse(BaseModel):
     email: str
     used: int
@@ -255,6 +263,26 @@ class AnalyzeResponse(BaseModel):
     sentiment: Dict[str, int]
     action_items: List[ActionItem]
     comments: List[Comment]
+
+
+class Review(BaseModel):
+    author: str
+    text: str
+    rating: int
+    published_at: str
+    sentiment: Optional[str] = None
+
+
+class AnalyzeMapsResponse(BaseModel):
+    place_id: str
+    place_name: str
+    place_address: str
+    place_rating: float
+    total_reviews: int
+    summary: str
+    sentiment: Dict[str, int]
+    action_items: List[ActionItem]
+    reviews: List[Review]
 
 
 class PDFRequest(BaseModel):
@@ -514,6 +542,238 @@ Focus on:
     
     # Fallback
     return []
+
+
+def get_maps_ai_summary(reviews: List[Dict], place_name: str = "", place_address: str = "") -> str:
+    """Get AI summary of Google Maps reviews."""
+    api_key = os.getenv('TOGETHER_API_KEY')
+    if not api_key:
+        raise ValueError("TOGETHER_API_KEY not set")
+    
+    client = Together(api_key=api_key)
+    
+    # Smart sampling for production
+    if len(reviews) > 500:
+        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
+        remaining = [r for r in reviews if r not in top_reviews]
+        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
+        sampled_reviews = top_reviews + random_sample
+    else:
+        sampled_reviews = reviews
+    
+    reviews_text = "\n\n".join([
+        f"Review {i+1} (Rating: {r.get('rating', 0)}/5):\n{r['text']}"
+        for i, r in enumerate(sampled_reviews)
+    ])
+    
+    # Build context about the place
+    place_context = ""
+    if place_name:
+        place_context += f"Business Name: {place_name}\n\n"
+    if place_address:
+        place_context += f"Location: {place_address}\n\n"
+    
+    prompt = f"""Analyze these Google Maps reviews and provide a representative summary for the business owner. Follow this exact format and style:
+
+**Overall Sentiment:**
+[Write one paragraph that accurately and concisely summarizes the overall sentiment of the reviews. Be specific about what customers are saying and feeling.]
+
+**Feedback Summary:**
+[Write one paragraph summarizing the feedback (both positive and negative) that customers have for the business. Capture the positives and negatives in proportions representative of the reviews. Focus on actionable insights.]
+
+Style guidelines:
+- Use clear, professional language
+- Be specific and concrete (mention what customers actually said)
+- Maintain a balanced, objective tone
+- Keep paragraphs concise but informative
+- Use present tense when describing customer sentiments
+
+{place_context}Reviews:
+{reviews_text}"""
+    
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000
+    )
+    
+    return response.choices[0].message.content
+
+
+def get_maps_sentiment_analysis(reviews: List[Dict], place_name: str = "") -> Dict[str, int]:
+    """Get sentiment breakdown of Google Maps reviews."""
+    api_key = os.getenv('TOGETHER_API_KEY')
+    if not api_key:
+        raise ValueError("TOGETHER_API_KEY not set")
+    
+    client = Together(api_key=api_key)
+    
+    total_reviews = len(reviews)
+    
+    # Smart sampling
+    if len(reviews) > 500:
+        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
+        remaining = [r for r in reviews if r not in top_reviews]
+        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
+        sampled_reviews = top_reviews + random_sample
+    else:
+        sampled_reviews = reviews
+    
+    reviews_text = "\n\n".join([
+        f"Review {i+1} (Rating: {r.get('rating', 0)}/5): {r['text']}"
+        for i, r in enumerate(sampled_reviews)
+    ])
+    
+    place_context = f"Business Name: {place_name}\n\n" if place_name else ""
+    
+    prompt = f"""Analyze the sentiment of these Google Maps reviews and categorize each as "positive", "neutral", or "negative".
+
+Return ONLY a JSON object with this format:
+{{
+  "positive": <number>,
+  "neutral": <number>,
+  "negative": <number>
+}}
+
+{place_context}Reviews:
+{reviews_text}"""
+    
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=500
+    )
+    
+    response_text = response.choices[0].message.content.strip()
+    
+    # Extract JSON
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text)
+    if json_match:
+        try:
+            sentiment_counts = json.loads(json_match.group())
+            
+            sampled_count = len(sampled_reviews)
+            llm_total = sum(sentiment_counts.values())
+            
+            if llm_total > 0:
+                scale_factor = total_reviews / llm_total
+                sentiment_counts = {
+                    "positive": round(sentiment_counts.get("positive", 0) * scale_factor),
+                    "neutral": round(sentiment_counts.get("neutral", 0) * scale_factor),
+                    "negative": round(sentiment_counts.get("negative", 0) * scale_factor)
+                }
+                
+                total_sentiment = sum(sentiment_counts.values())
+                if total_sentiment != total_reviews:
+                    diff = total_reviews - total_sentiment
+                    max_key = max(sentiment_counts, key=sentiment_counts.get)
+                    sentiment_counts[max_key] += diff
+            
+            return sentiment_counts
+        except json.JSONDecodeError:
+            pass
+    
+    return {"positive": 0, "neutral": 0, "negative": 0}
+
+
+def get_maps_action_items(reviews: List[Dict], place_name: str = "") -> List[ActionItem]:
+    """Get actionable recommendations from Google Maps reviews."""
+    api_key = os.getenv('TOGETHER_API_KEY')
+    if not api_key:
+        raise ValueError("TOGETHER_API_KEY not set")
+    
+    client = Together(api_key=api_key)
+    
+    # Smart sampling
+    if len(reviews) > 500:
+        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
+        remaining = [r for r in reviews if r not in top_reviews]
+        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
+        sampled_reviews = top_reviews + random_sample
+    else:
+        sampled_reviews = reviews
+    
+    reviews_text = "\n\n".join([
+        f"Review {i+1} (Rating: {r.get('rating', 0)}/5):\n{r['text']}"
+        for i, r in enumerate(sampled_reviews)
+    ])
+    
+    place_context = f"Business Name: {place_name}\n\n" if place_name else ""
+    
+    prompt = f"""Based on these Google Maps reviews, provide 3-5 specific, actionable recommendations for the business owner to improve their business.
+
+Return ONLY a JSON array with this format:
+[
+  {{
+    "title": "Short action title",
+    "description": "Brief explanation of why and how",
+    "impact": "High|Medium|Low"
+  }}
+]
+
+Focus on:
+- Concrete, specific actions (not vague advice)
+- Things mentioned by multiple customers
+- Balance positive reinforcement with areas to improve
+- Prioritize by impact (what will make the biggest difference)
+- Actionable improvements the business can make going forward
+
+{place_context}Reviews:
+{reviews_text}"""
+    
+    response = client.chat.completions.create(
+        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1500
+    )
+    
+    response_text = response.choices[0].message.content.strip()
+    
+    # Extract JSON array
+    json_match = re.search(r'\[[\s\S]*\]', response_text)
+    if json_match:
+        try:
+            action_data = json.loads(json_match.group())
+            return [ActionItem(**item) for item in action_data]
+        except (json.JSONDecodeError, ValueError):
+            pass
+    
+    return []
+
+
+def assign_sentiments_to_reviews(reviews: List[Dict], sentiment_counts: Dict[str, int]) -> List[Review]:
+    """Assign sentiment labels to individual reviews based on overall distribution."""
+    total = len(reviews)
+    if total == 0:
+        return []
+    
+    positive_count = sentiment_counts.get('positive', 0)
+    neutral_count = sentiment_counts.get('neutral', 0)
+    negative_count = sentiment_counts.get('negative', 0)
+    
+    # Sort reviews by rating (highest first)
+    sorted_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)
+    
+    result = []
+    for i, review in enumerate(sorted_reviews):
+        ratio = i / max(total, 1)
+        
+        if ratio < positive_count / max(total, 1):
+            sentiment = "positive"
+        elif ratio < (positive_count + neutral_count) / max(total, 1):
+            sentiment = "neutral"
+        else:
+            sentiment = "negative"
+        
+        result.append(Review(
+            author=review['author'],
+            text=review['text'],
+            rating=review.get('rating', 0),
+            published_at=review['published_at'],
+            sentiment=sentiment
+        ))
+    
+    return result
 
 
 def assign_sentiments_to_comments(comments: List[Dict], sentiment_counts: Dict[str, int]) -> List[Comment]:
@@ -963,6 +1223,77 @@ async def analyze_video(request: AnalyzeRequest):
         import traceback
         error_trace = traceback.format_exc()
         print(f"Error analyzing video: {error_trace}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"An error occurred: {str(e)}. Please check your API keys and try again."
+        )
+
+
+@app.post("/analyze-maps", response_model=AnalyzeMapsResponse)
+async def analyze_maps_place(request: AnalyzeMapsRequest):
+    """Analyze a Google Maps place's reviews."""
+    try:
+        # Check usage limits
+        if not request.user_email:
+            raise HTTPException(
+                status_code=401, 
+                detail="Please sign in to analyze places"
+            )
+        
+        can_analyze, remaining = check_usage_limit(request.user_email)
+        if not can_analyze:
+            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+            user_limit = TIER_LIMITS[tier]
+            raise HTTPException(
+                status_code=429, 
+                detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!"
+            )
+        
+        # Extract place ID from URL
+        place_id = extract_place_id_from_url(request.maps_url)
+        
+        # Fetch place reviews
+        reviews, place_info = get_place_reviews(place_id, max_results=1000)
+        
+        if not reviews:
+            raise HTTPException(status_code=404, detail="No reviews found for this place")
+        
+        # Get AI analysis
+        summary = get_maps_ai_summary(reviews, place_info['name'], place_info['address'])
+        sentiment = get_maps_sentiment_analysis(reviews, place_info['name'])
+        action_items = get_maps_action_items(reviews, place_info['name'])
+        
+        # Assign sentiments to reviews
+        reviews_with_sentiment = assign_sentiments_to_reviews(reviews, sentiment)
+        
+        # Increment usage count after successful analysis
+        if request.user_email:
+            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+            if TIER_LIMITS[tier] != -1:  # Only increment if not unlimited
+                increment_user_usage(request.user_email)
+        
+        return AnalyzeMapsResponse(
+            place_id=place_id,
+            place_name=place_info['name'],
+            place_address=place_info['address'],
+            place_rating=place_info['rating'],
+            total_reviews=len(reviews),
+            summary=summary,
+            sentiment=sentiment,
+            action_items=action_items,
+            reviews=reviews_with_sentiment
+        )
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Log the full error for debugging
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error analyzing Google Maps place: {error_trace}")
         raise HTTPException(
             status_code=500, 
             detail=f"An error occurred: {str(e)}. Please check your API keys and try again."

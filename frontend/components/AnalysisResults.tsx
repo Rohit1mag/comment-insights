@@ -25,15 +25,28 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recha
 interface Comment {
   author: string;
   text: string;
-  like_count: number;
+  like_count?: number;
+  rating?: number;
   published_at: string;
   sentiment?: string;
 }
 
 interface AnalysisData {
-  video_id: string;
+  // YouTube fields
+  video_id?: string;
   video_title?: string;
-  total_comments: number;
+  total_comments?: number;
+  comments?: Comment[];
+  
+  // Google Maps fields
+  place_id?: string;
+  place_name?: string;
+  place_address?: string;
+  place_rating?: number;
+  total_reviews?: number;
+  reviews?: Comment[];
+  
+  // Common fields
   summary: string;
   sentiment: {
     positive: number;
@@ -45,7 +58,6 @@ interface AnalysisData {
     description: string;
     impact: string;
   }>;
-  comments: Comment[];
 }
 
 interface AnalysisResultsProps {
@@ -64,6 +76,16 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
   const [minLikes, setMinLikes] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [isDownloading, setIsDownloading] = useState(false);
+  
+  // Determine if this is YouTube or Google Maps data
+  const isYouTube = !!data.video_id;
+  const isMaps = !!data.place_id;
+  
+  // Normalize data fields
+  const items = (data.comments || data.reviews || []) as Comment[];
+  const totalCount = data.total_comments || data.total_reviews || 0;
+  const title = data.video_title || data.place_name || '';
+  const itemId = data.video_id || data.place_id || '';
 
   // Prepare chart data
   const chartData = [
@@ -86,9 +108,9 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          video_id: data.video_id,
-          video_title: data.video_title || `YouTube Video ${data.video_id}`,
-          total_comments: data.total_comments,
+          video_id: itemId,
+          video_title: title || `${isYouTube ? 'YouTube Video' : 'Google Maps Place'} ${itemId}`,
+          total_comments: totalCount,
           summary: data.summary,
           sentiment: data.sentiment,
           action_items: data.action_items,
@@ -125,7 +147,7 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `youtube_analysis_${data.video_id}_${new Date().toISOString().split("T")[0]}.pdf`;
+      a.download = `${isYouTube ? 'youtube' : 'maps'}_analysis_${itemId}_${new Date().toISOString().split("T")[0]}.pdf`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -138,15 +160,16 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
     }
   };
 
-  // Filter comments
-  const filteredComments = data.comments.filter((comment) => {
-    if (sentimentFilter.length > 0 && comment.sentiment && !sentimentFilter.includes(comment.sentiment)) {
+  // Filter items (comments or reviews)
+  const filteredItems = items.filter((item) => {
+    if (sentimentFilter.length > 0 && item.sentiment && !sentimentFilter.includes(item.sentiment)) {
       return false;
     }
-    if (comment.like_count < minLikes) {
+    const itemScore = item.like_count || 0;
+    if (itemScore < minLikes) {
       return false;
     }
-    if (searchTerm && !comment.text.toLowerCase().includes(searchTerm.toLowerCase())) {
+    if (searchTerm && !item.text.toLowerCase().includes(searchTerm.toLowerCase())) {
       return false;
     }
     return true;
@@ -196,8 +219,18 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
           Analysis Results
         </h2>
         <p className="text-gray-400 text-lg">
-          Analyzed {data.total_comments} comments from your video
+          Analyzed {totalCount} {isYouTube ? 'comments' : 'reviews'} {isYouTube ? 'from your video' : 'from this place'}
         </p>
+        {isMaps && data.place_address && (
+          <p className="text-gray-500 text-sm mt-2">
+            {data.place_address}
+          </p>
+        )}
+        {isMaps && data.place_rating && (
+          <p className="text-gray-500 text-sm mt-1">
+            Overall Rating: {data.place_rating}/5
+          </p>
+        )}
       </div>
 
       {/* Action Items - Top Priority */}
@@ -420,9 +453,11 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
         <CardHeader className="p-8 border-b border-white/5">
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-2xl font-bold mb-2">Comment Browser</CardTitle>
+              <CardTitle className="text-2xl font-bold mb-2">
+                {isYouTube ? 'Comment' : 'Review'} Browser
+              </CardTitle>
               <CardDescription className="text-gray-400 text-base">
-                {filteredComments.length} of {data.comments.length} comments
+                {filteredItems.length} of {items.length} {isYouTube ? 'comments' : 'reviews'}
               </CardDescription>
             </div>
             {hasActiveFilters && (
@@ -487,14 +522,14 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
             <div className="flex gap-3">
               <Input
                 type="text"
-                placeholder="Search comments..."
+                placeholder={`Search ${isYouTube ? 'comments' : 'reviews'}...`}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="flex-1 bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-xl"
               />
               <Input
                 type="number"
-                placeholder="Min likes"
+                placeholder={isYouTube ? "Min likes" : "Min rating"}
                 value={minLikes || ""}
                 onChange={(e) => setMinLikes(Number(e.target.value) || 0)}
                 className="w-36 bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-xl"
@@ -503,10 +538,10 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
             </div>
           </div>
 
-          {/* Comments List */}
+          {/* Items List */}
           <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {filteredComments.length > 0 ? (
-              filteredComments.map((comment, index) => (
+            {filteredItems.length > 0 ? (
+              filteredItems.map((item, index) => (
                 <div
                   key={index}
                   className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-white/10 hover:bg-white/8 transition-all duration-300"
@@ -516,42 +551,49 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
                       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center">
                         <User className="h-4 w-4 text-blue-400" />
                       </div>
-                      <span className="font-medium text-white">{comment.author}</span>
-                      {comment.sentiment && (
+                      <span className="font-medium text-white">{item.author}</span>
+                      {item.sentiment && (
                         <Badge
                           variant="outline"
                           className={`rounded-full font-medium ${
-                            comment.sentiment === "positive"
+                            item.sentiment === "positive"
                               ? "border-blue-400/40 text-blue-300 bg-blue-500/10"
-                              : comment.sentiment === "negative"
+                              : item.sentiment === "negative"
                               ? "border-pink-400/40 text-pink-300 bg-pink-500/10"
                               : "border-purple-400/40 text-purple-300 bg-purple-500/10"
                           }`}
                         >
-                          {comment.sentiment}
+                          {item.sentiment}
                         </Badge>
                       )}
                     </div>
                     <div className="flex items-center gap-4 text-sm text-gray-400">
-                      <div className="flex items-center gap-1.5">
-                        <ThumbsUp className="h-4 w-4" />
-                        {comment.like_count}
-                      </div>
+                      {isYouTube ? (
+                        <div className="flex items-center gap-1.5">
+                          <ThumbsUp className="h-4 w-4" />
+                          {item.like_count || 0}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-yellow-400">★</span>
+                          {item.rating || 0}/5
+                        </div>
+                      )}
                       <div className="flex items-center gap-1.5">
                         <Calendar className="h-4 w-4" />
-                        {new Date(comment.published_at).toLocaleDateString()}
+                        {new Date(item.published_at).toLocaleDateString()}
                       </div>
                     </div>
                   </div>
                   <p className="text-sm text-gray-300 leading-relaxed">
-                    {comment.text}
+                    {item.text}
                   </p>
                 </div>
               ))
             ) : (
               <div className="text-center py-16 text-gray-500">
                 <AlertCircle className="h-14 w-14 mx-auto mb-4 opacity-40" />
-                <p className="text-lg font-medium">No comments match your filters</p>
+                <p className="text-lg font-medium">No {isYouTube ? 'comments' : 'reviews'} match your filters</p>
                 <p className="text-sm mt-2">Try adjusting your filters</p>
               </div>
             )}

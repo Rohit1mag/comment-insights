@@ -1,8 +1,8 @@
-# YouTube Comment Insights 🎯
+# Review Insights 🎯
 
-**Transform YouTube comments into actionable improvements for your next video.**
+**Transform YouTube comments and Google Maps reviews into actionable improvements.**
 
-A modern, AI-powered web application built for YouTube creators who want to understand their audience and improve their content based on real feedback.
+A modern, AI-powered web application built for YouTube creators and business owners who want to understand their audience and improve based on real feedback.
 
 ![Tech Stack](https://img.shields.io/badge/Next.js-14-black) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green) ![Python](https://img.shields.io/badge/Python-3.9+-yellow)
 
@@ -10,12 +10,14 @@ A modern, AI-powered web application built for YouTube creators who want to unde
 
 ## ✨ Features
 
-### For Creators
+### For Creators & Businesses
 - 🎯 **Actionable Recommendations** - Get 3-5 prioritized action items ranked by impact
 - 📊 **Sentiment Analysis** - Understand your audience's overall mood (positive/neutral/negative)
-- 💬 **Smart Comment Browser** - Filter by sentiment, likes, date, and search keywords
-- ⚡ **Fast Analysis** - Results in 15-30 seconds for up to 100 comments
+- 💬 **Smart Review Browser** - Filter by sentiment, likes/ratings, date, and search keywords
+- ⚡ **Fast Analysis** - Results in 15-30 seconds
 - 🎨 **Beautiful UI** - Modern, responsive design that works on all devices
+- 🎥 **YouTube Comments** - Analyze video comments to improve your content
+- 🗺️ **Google Maps Reviews** - Analyze business reviews to improve your service
 
 ### Technical
 - 🚀 **Modern Stack** - Next.js 14 (App Router) + FastAPI backend
@@ -31,8 +33,8 @@ A modern, AI-powered web application built for YouTube creators who want to unde
 ### Prerequisites
 - Node.js 18+
 - Python 3.9+
-- [YouTube Data API key](https://console.cloud.google.com/)
-- [Claude API key](https://console.anthropic.com/)
+- [Google Cloud API key](https://console.cloud.google.com/) (for YouTube Data API & Google Places API)
+- [Together AI API key](https://api.together.xyz/) (for Llama 4 Maverick)
 
 ### Option 1: Automated Start (Easiest)
 
@@ -42,8 +44,8 @@ git clone https://github.com/yourusername/YouTubeComments.git
 cd YouTubeComments
 
 # Set your API keys in .env file
-echo "YOUTUBE_API_KEY=your_key" >> .env
-echo "CLAUDE_API_KEY=your_key" >> .env
+echo "YOUTUBE_API_KEY=your_google_api_key" >> .env
+echo "TOGETHER_API_KEY=your_together_api_key" >> .env
 
 # Run the startup script
 ./start-dev.sh
@@ -57,8 +59,8 @@ Visit http://localhost:3000 and start analyzing! 🎉
 ```bash
 cd backend
 pip install -r requirements.txt
-export YOUTUBE_API_KEY='your_key'
-export CLAUDE_API_KEY='your_key'
+export YOUTUBE_API_KEY='your_google_api_key'
+export TOGETHER_API_KEY='your_together_api_key'
 python main.py
 ```
 
@@ -113,8 +115,9 @@ YouTubeComments/
 
 ### Backend
 - **[FastAPI](https://fastapi.tiangolo.com/)** - Modern Python web framework
-- **[Anthropic Claude](https://www.anthropic.com/)** - AI analysis (Sonnet 4)
+- **[Together AI](https://www.together.ai/)** - AI analysis (Llama 4 Maverick)
 - **[YouTube Data API v3](https://developers.google.com/youtube/v3)** - Comment fetching
+- **[Google Places API](https://developers.google.com/maps/documentation/places/web-service)** - Review fetching
 - **[Pydantic](https://docs.pydantic.dev/)** - Data validation
 
 ### Deployment
@@ -132,7 +135,8 @@ Analyzes a YouTube video's comments and returns insights.
 **Request:**
 ```json
 {
-  "video_url": "https://www.youtube.com/watch?v=VIDEO_ID"
+  "video_url": "https://www.youtube.com/watch?v=VIDEO_ID",
+  "user_email": "user@example.com"
 }
 ```
 
@@ -140,6 +144,7 @@ Analyzes a YouTube video's comments and returns insights.
 ```json
 {
   "video_id": "VIDEO_ID",
+  "video_title": "Video Title",
   "total_comments": 100,
   "summary": "AI-generated summary of comments...",
   "sentiment": {
@@ -155,6 +160,43 @@ Analyzes a YouTube video's comments and returns insights.
     }
   ],
   "comments": [...]
+}
+```
+
+### `POST /analyze-maps`
+
+Analyzes a Google Maps place's reviews and returns insights.
+
+**Request:**
+```json
+{
+  "maps_url": "https://www.google.com/maps/place/...",
+  "user_email": "user@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "place_id": "PLACE_ID",
+  "place_name": "Business Name",
+  "place_address": "123 Main St, City, State",
+  "place_rating": 4.5,
+  "total_reviews": 50,
+  "summary": "AI-generated summary of reviews...",
+  "sentiment": {
+    "positive": 35,
+    "neutral": 10,
+    "negative": 5
+  },
+  "action_items": [
+    {
+      "title": "Improve wait times",
+      "description": "Multiple customers mentioned long waits...",
+      "impact": "High"
+    }
+  ],
+  "reviews": [...]
 }
 ```
 
@@ -175,11 +217,16 @@ Deploy to production in minutes:
 
 ## 🎯 Getting Real Users
 
-Built this for real creators? Here's how to get your first 100 users:
+Built this for real creators and businesses? Here's how to get your first 100 users:
 
-1. **Week 1**: Personal outreach - DM 20 creators with free analysis
+1. **Week 1**: Personal outreach - DM 20 creators and business owners with free analysis
 2. **Week 2**: Public launch on Reddit, Twitter, Product Hunt
 3. **Week 3+**: Word of mouth, content marketing
+
+Target audiences:
+- YouTube creators wanting to improve their content
+- Local business owners wanting to understand customer feedback
+- Restaurant and retail owners looking to improve service
 
 📖 **Full strategy:** [GETTING_USERS.md](GETTING_USERS.md)
 
@@ -207,16 +254,16 @@ cd frontend && npm run dev
 
 ## 🔑 Getting API Keys
 
-### YouTube Data API v3
+### Google Cloud API (YouTube + Places)
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create project → Enable YouTube Data API v3
+2. Create project → Enable YouTube Data API v3 and Places API
 3. Create credentials → API Key
-4. Copy key → Add to `.env`
+4. Copy key → Add to `.env` as `YOUTUBE_API_KEY`
 
-### Claude API
-1. Go to [Anthropic Console](https://console.anthropic.com/)
+### Together AI API
+1. Go to [Together AI](https://api.together.xyz/)
 2. Sign up → Generate API key
-3. Copy key → Add to `.env`
+3. Copy key → Add to `.env` as `TOGETHER_API_KEY`
 
 ---
 
@@ -269,7 +316,7 @@ Questions? Feedback? Reach out!
 
 ---
 
-**Made with ❤️ for YouTube creators who want to make better content**
+**Made with ❤️ for creators and businesses who want to improve based on real feedback**
 
 ⭐ Star this repo if you find it useful!
 
