@@ -4,13 +4,14 @@
 
 A modern, AI-powered web application built for YouTube creators and business owners who want to understand their audience and improve based on real feedback.
 
-![Tech Stack](https://img.shields.io/badge/Next.js-14-black) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green) ![Python](https://img.shields.io/badge/Python-3.9+-yellow)
+![Next.js](https://img.shields.io/badge/Next.js-16-black) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.128-green) ![Python](https://img.shields.io/badge/Python-3.9+-yellow)
 
 ---
 
 ## ✨ Features
 
 ### For Creators & Businesses
+
 - 🎯 **Actionable Recommendations** - Get 3-5 prioritized action items ranked by impact
 - 📊 **Sentiment Analysis** - Understand your audience's overall mood (positive/neutral/negative)
 - 💬 **Smart Review Browser** - Filter by sentiment, likes/ratings, date, and search keywords
@@ -20,17 +21,21 @@ A modern, AI-powered web application built for YouTube creators and business own
 - 🗺️ **Google Maps Reviews** - Analyze business reviews to improve your service
 
 ### Technical
+
 - 🚀 **Modern Stack** - Next.js 14 (App Router) + FastAPI backend
 - 🔒 **Type-Safe** - Full TypeScript on frontend
 - 📈 **Data Viz** - Interactive charts with Recharts
 - 🎨 **Design System** - shadcn/ui components with Tailwind CSS
-- 🌐 **Production Ready** - Easy deployment to Vercel + Railway
+- 🌐 **Production Ready** - Deployed on Vercel (frontend) + Render (backend)
+- 💳 **Payment Integration** - Stripe subscription tiers (Free, Pro, Unlimited)
+- 🔐 **Authentication** - Clerk user management with usage tracking
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - Node.js 18+
 - Python 3.9+
 - [Google Cloud API key](https://console.cloud.google.com/) (for YouTube Data API & Google Places API)
@@ -40,8 +45,8 @@ A modern, AI-powered web application built for YouTube creators and business own
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/YouTubeComments.git
-cd YouTubeComments
+git clone https://github.com/Rohit1mag/comment-insights.git
+cd comment-insights
 
 # Set your API keys in .env file
 echo "YOUTUBE_API_KEY=your_google_api_key" >> .env
@@ -51,11 +56,12 @@ echo "TOGETHER_API_KEY=your_together_api_key" >> .env
 ./start-dev.sh
 ```
 
-Visit http://localhost:3000 and start analyzing! 🎉
+Visit [http://localhost:3000](http://localhost:3000) and start analyzing! 🎉
 
 ### Option 2: Manual Setup
 
 **Backend:**
+
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -65,13 +71,14 @@ python main.py
 ```
 
 **Frontend:**
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-📖 **For detailed setup instructions, see [SETUP_GUIDE.md](SETUP_GUIDE.md)**
+📖 **For detailed setup instructions, see [SETUP_GUIDE.md**](SETUP_GUIDE.md)
 
 ---
 
@@ -106,6 +113,7 @@ YouTubeComments/
 ## 🎨 Tech Stack
 
 ### Frontend
+
 - **[Next.js 14](https://nextjs.org/)** - React framework with App Router
 - **[TypeScript](https://www.typescriptlang.org/)** - Type safety
 - **[Tailwind CSS](https://tailwindcss.com/)** - Utility-first styling
@@ -114,15 +122,20 @@ YouTubeComments/
 - **[Lucide Icons](https://lucide.dev/)** - Icon library
 
 ### Backend
+
 - **[FastAPI](https://fastapi.tiangolo.com/)** - Modern Python web framework
 - **[Together AI](https://www.together.ai/)** - AI analysis (Llama 4 Maverick)
 - **[YouTube Data API v3](https://developers.google.com/youtube/v3)** - Comment fetching
-- **[Google Places API](https://developers.google.com/maps/documentation/places/web-service)** - Review fetching
+- **[Google Places API (New)](https://developers.google.com/maps/documentation/places/web-service)** - Review fetching
 - **[Pydantic](https://docs.pydantic.dev/)** - Data validation
+- **[Stripe](https://stripe.com/)** - Payment processing
+- **[Clerk](https://clerk.com/)** - Authentication & user management
+- **[ReportLab](https://www.reportlab.com/)** - PDF generation
 
 ### Deployment
-- **Frontend**: [Vercel](https://vercel.com/) (recommended)
-- **Backend**: [Railway](https://railway.app/) or [Render](https://render.com/)
+
+- **Frontend**: [Vercel](https://vercel.com/)
+- **Backend**: [Render](https://render.com/)
 
 ---
 
@@ -133,6 +146,7 @@ YouTubeComments/
 Analyzes a YouTube video's comments and returns insights.
 
 **Request:**
+
 ```json
 {
   "video_url": "https://www.youtube.com/watch?v=VIDEO_ID",
@@ -141,6 +155,7 @@ Analyzes a YouTube video's comments and returns insights.
 ```
 
 **Response:**
+
 ```json
 {
   "video_id": "VIDEO_ID",
@@ -168,6 +183,7 @@ Analyzes a YouTube video's comments and returns insights.
 Analyzes a Google Maps place's reviews and returns insights.
 
 **Request:**
+
 ```json
 {
   "maps_url": "https://www.google.com/maps/place/...",
@@ -176,18 +192,19 @@ Analyzes a Google Maps place's reviews and returns insights.
 ```
 
 **Response:**
+
 ```json
 {
   "place_id": "PLACE_ID",
   "place_name": "Business Name",
   "place_address": "123 Main St, City, State",
   "place_rating": 4.5,
-  "total_reviews": 50,
+  "total_reviews": 5,
   "summary": "AI-generated summary of reviews...",
   "sentiment": {
-    "positive": 35,
-    "neutral": 10,
-    "negative": 5
+    "positive": 3,
+    "neutral": 1,
+    "negative": 1
   },
   "action_items": [
     {
@@ -200,16 +217,18 @@ Analyzes a Google Maps place's reviews and returns insights.
 }
 ```
 
-📚 **Full API docs:** http://localhost:8000/docs (when backend is running)
+📚 **Full API docs:** [http://localhost:8000/docs](http://localhost:8000/docs) (when backend is running)
+
+**Note:** Google Places API returns a maximum of 5 reviews per place due to API limitations. YouTube comments can fetch up to 1000 per video.
 
 ---
 
 ## 🌐 Deployment
 
-Deploy to production in minutes:
+Currently deployed and running in production:
 
-1. **Backend** → [Railway](https://railway.app) or [Render](https://render.com)
-2. **Frontend** → [Vercel](https://vercel.com)
+- **Frontend**: Deployed on [Vercel](https://vercel.com)
+- **Backend**: Deployed on [Render](https://render.com)
 
 📖 **Step-by-step guide:** [DEPLOYMENT.md](DEPLOYMENT.md)
 
@@ -224,6 +243,7 @@ Built this for real creators and businesses? Here's how to get your first 100 us
 3. **Week 3+**: Word of mouth, content marketing
 
 Target audiences:
+
 - YouTube creators wanting to improve their content
 - Local business owners wanting to understand customer feedback
 - Restaurant and retail owners looking to improve service
@@ -246,21 +266,26 @@ cd backend && python main.py
 cd frontend && npm run dev
 ```
 
-**Frontend:** http://localhost:3000  
-**Backend:** http://localhost:8000  
-**API Docs:** http://localhost:8000/docs
+**Frontend:** [http://localhost:3000](http://localhost:3000)  
+**Backend:** [http://localhost:8000](http://localhost:8000)  
+**API Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
 ## 🔑 Getting API Keys
 
 ### Google Cloud API (YouTube + Places)
+
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create project → Enable YouTube Data API v3 and Places API
+2. Create project → Enable **YouTube Data API v3** and **Places API (New)**
 3. Create credentials → API Key
 4. Copy key → Add to `.env` as `YOUTUBE_API_KEY`
 
+**Important**: Enable "Places API (New)", not the legacy "Places API"  
+📖 **Detailed guide:** [GOOGLE_MAPS_SETUP.md](GOOGLE_MAPS_SETUP.md)
+
 ### Together AI API
+
 1. Go to [Together AI](https://api.together.xyz/)
 2. Sign up → Generate API key
 3. Copy key → Add to `.env` as `TOGETHER_API_KEY`
@@ -269,17 +294,25 @@ cd frontend && npm run dev
 
 ## 🎯 Roadmap
 
-- [x] Core analysis features
-- [x] Beautiful Next.js UI
-- [x] Comment filtering and search
-- [x] Actionable recommendations
-- [ ] Multi-video analysis
-- [ ] Export reports as PDF
-- [ ] User authentication (Clerk)
-- [ ] Analysis history
-- [ ] Email reports
-- [ ] API rate limiting
-- [ ] Redis caching
+**Completed:**
+- ✅ Core analysis features (YouTube + Google Maps)
+- ✅ Beautiful Next.js UI with shadcn/ui
+- ✅ Comment/review filtering and search
+- ✅ AI-powered actionable recommendations
+- ✅ Export reports as PDF
+- ✅ User authentication (Clerk)
+- ✅ Stripe payment integration
+- ✅ Usage tracking and tier limits
+
+**In Progress:**
+- 🔄 Analysis history
+- 🔄 Multi-video comparison
+
+**Planned:**
+- 📋 Email reports
+- 📋 API rate limiting
+- 📋 Redis caching
+- 📋 Competitor analysis (Google Maps)
 
 ---
 
@@ -311,12 +344,13 @@ Questions? Feedback? Reach out!
 
 - [Next.js](https://nextjs.org/) for the amazing framework
 - [shadcn](https://twitter.com/shadcn) for the beautiful UI components
-- [Anthropic](https://www.anthropic.com/) for Claude AI
-- [Vercel](https://vercel.com/) & [Railway](https://railway.app/) for easy deployment
+- [Together AI](https://www.together.ai/) for Llama 4 Maverick access
+- [Vercel](https://vercel.com/) & [Render](https://render.com/) for hosting
+- [Clerk](https://clerk.com/) for authentication
+- [Stripe](https://stripe.com/) for payment processing
 
 ---
 
 **Made with ❤️ for creators and businesses who want to improve based on real feedback**
 
 ⭐ Star this repo if you find it useful!
-
