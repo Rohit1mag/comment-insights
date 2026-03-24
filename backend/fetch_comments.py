@@ -252,7 +252,7 @@ def summarize_constructive_criticism(comments):
 
     try:
         response = client.chat.completions.create(
-            model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+            model="moonshotai/Kimi-K2.5",
             messages=[
                 {
                     "role": "user",

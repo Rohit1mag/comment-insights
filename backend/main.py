@@ -316,6 +316,330 @@ def extract_video_id(url: str) -> str:
     raise ValueError("Invalid YouTube URL")
 
 
+def _extract_llm_text(response) -> str:
+    """Get text from LLM response, checking content, reasoning_content, and other fields."""
+    choice = response.choices[0]
+    msg = choice.message
+    
+    # Try standard content first
+    text = msg.content
+    if text:
+        return text.strip()
+    
+    # Try reasoning_content (Kimi and other reasoning models)
+    text = getattr(msg, "reasoning_content", None)
+    if text:
+        return text.strip()
+    
+    # Try tool_calls or function_call (some models return structured data this way)
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        for tc in tool_calls:
+            fn = getattr(tc, "function", None)
+            if fn and getattr(fn, "arguments", None):
+                return fn.arguments.strip()
+    
+    # Dump all message attributes for debugging
+    attrs = {k: str(v)[:200] for k, v in vars(msg).items() if v}
+    print(f"[DEBUG _extract_llm_text] No content found. Message attrs: {attrs}")
+    print(f"[DEBUG _extract_llm_text] Choice finish_reason: {getattr(choice, 'finish_reason', 'unknown')}")
+    
+    return ""
+
+
+def _strip_llm_markdown_fences(text: str) -> str:
+    """Extract content from ```json ... ``` if present (anywhere in the string)."""
+    t = text.strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return t
+
+
+def extract_json_object_from_llm(text: str) -> Optional[Dict]:
+    """Parse a JSON object from LLM output (markdown fences, extra prose)."""
+    if not text:
+        return None
+    t = _strip_llm_markdown_fences(text)
+    try:
+        obj = json.loads(t)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    start = t.find("{")
+    end = t.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(t[start : end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def extract_json_array_from_llm(text: str) -> Optional[List]:
+    """Parse a JSON array from LLM output."""
+    if not text:
+        return None
+    t = _strip_llm_markdown_fences(text)
+    try:
+        arr = json.loads(t)
+        if isinstance(arr, list):
+            return arr
+    except json.JSONDecodeError:
+        pass
+    start = t.find("[")
+    end = t.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            arr = json.loads(t[start : end + 1])
+            if isinstance(arr, list):
+                return arr
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _float_val(v) -> float:
+    try:
+        if isinstance(v, str):
+            v = v.strip().replace(",", "")
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _extract_sentiment_floats(raw: Dict) -> tuple[float, float, float]:
+    """Read positive/neutral/negative as floats (handles % and proportions)."""
+    lower = {str(k).lower().strip(): v for k, v in raw.items()}
+
+    def pick(*names: str) -> float:
+        for n in names:
+            if n in lower:
+                return _float_val(lower[n])
+        return 0.0
+
+    p = pick("positive", "pos")
+    neu = pick("neutral", "neu")
+    neg = pick("negative", "neg")
+    if p + neu + neg == 0:
+        for k, v in lower.items():
+            fv = _float_val(v)
+            if fv == 0:
+                continue
+            if "positive" in k or k in ("pos", "p"):
+                p += fv
+            elif "negative" in k or k in ("neg", "n"):
+                neg += fv
+            elif "neutral" in k or k in ("neu", "u"):
+                neu += fv
+    return p, neu, neg
+
+
+def _parse_sentiment_counts_from_dict(raw: Dict, total_comments: int) -> Optional[Dict[str, int]]:
+    """
+    Normalize LLM sentiment to integer counts summing to total_comments.
+    Handles raw counts, percentages (sum ~100), and proportions (sum ~1).
+    Returns None if the dict cannot be interpreted (caller uses heuristic).
+    """
+    if total_comments <= 0:
+        return {"positive": 0, "neutral": 0, "negative": 0}
+
+    p, neu, neg = _extract_sentiment_floats(raw)
+    s = p + neu + neg
+    if s <= 0:
+        return None
+
+    # Proportions (e.g. 0.7, 0.2, 0.1)
+    if s <= 1.01 and max(p, neu, neg) <= 1.0:
+        p, neu, neg = (
+            p * total_comments / s,
+            neu * total_comments / s,
+            neg * total_comments / s,
+        )
+    # Percentages (e.g. 70, 20, 10) or counts that sum to 100
+    elif 90 <= s <= 110 and max(p, neu, neg) > 1.0:
+        p, neu, neg = (
+            p * total_comments / s,
+            neu * total_comments / s,
+            neg * total_comments / s,
+        )
+    else:
+        # Raw counts: scale to total_comments
+        scale = total_comments / s
+        p, neu, neg = p * scale, neu * scale, neg * scale
+
+    sentiment_counts = {
+        "positive": max(0, round(p)),
+        "neutral": max(0, round(neu)),
+        "negative": max(0, round(neg)),
+    }
+    total_sentiment = sum(sentiment_counts.values())
+    if total_sentiment != total_comments:
+        diff = total_comments - total_sentiment
+        max_key = max(sentiment_counts, key=sentiment_counts.get)
+        sentiment_counts[max_key] += diff
+    return sentiment_counts
+
+
+def heuristic_sentiment_youtube(comments: List[Dict], total: int) -> Dict[str, int]:
+    """Keyword + emoji sentiment when LLM JSON is missing or invalid."""
+    if total <= 0:
+        return {"positive": 0, "neutral": 0, "negative": 0}
+    pos_words = re.compile(
+        r"\b(love|loved|loves|loving|great|good|amazing|best|thanks|thank|awesome|excellent|"
+        r"helpful|beautiful|perfect|incredible|fantastic|wonderful|brilliant|nice|cool|agree|"
+        r"subscribe|subscribed|legend|goat|fire|banger|masterpiece|insane|dope|lit|iconic|"
+        r"underrated|gem|blessed|proud|respect|king|queen|god|goddess|stunning|"
+        r"fav|favorite|favourite|sick|vibes|vibe|talented|genius|goosebumps|chills|"
+        r"wow|omg|yess+|yes|bravo|congratulations|congrats|inspiring|inspiration)\b",
+        re.I,
+    )
+    pos_emoji = re.compile(r"[❤️😍👍💯🔥😊🥰💪🎉👏✨💖💕😭🤩😎👑🙏💗💙💜🫶🥺♥️]+")
+    neg_words = re.compile(
+        r"\b(hate|hated|bad|worst|terrible|awful|boring|useless|disappoint|disappointed|"
+        r"trash|sucks|suck|pathetic|horrible|garbage|scam|clickbait|cringe|mid|"
+        r"overrated|annoying|fake|copied|stolen|dislike|disliked|stop|ruined|ruin)\b",
+        re.I,
+    )
+    neg_emoji = re.compile(r"[😡👎🤮💩😤😠]+")
+    pos_count, neg_count, neutral_count = 0, 0, 0
+    for c in comments:
+        t = (c.get("text") or "")[:6000]
+        pw = len(pos_words.findall(t))
+        pe = len(pos_emoji.findall(t))
+        nw = len(neg_words.findall(t))
+        ne = len(neg_emoji.findall(t))
+        p_score = pw + pe
+        n_score = nw + ne
+        if p_score > 0 and p_score > n_score:
+            pos_count += 1
+        elif n_score > 0 and n_score > p_score:
+            neg_count += 1
+        elif p_score > 0 and n_score > 0:
+            neutral_count += 1
+        else:
+            # No strong signals — default to neutral
+            neutral_count += 1
+    s = pos_count + neg_count + neutral_count
+    if s == 0:
+        return {"positive": total, "neutral": 0, "negative": 0}
+    scale = total / s
+    rp = max(0, round(pos_count * scale))
+    rn = max(0, round(neg_count * scale))
+    rneu = total - rp - rn
+    if rneu < 0:
+        rneu = 0
+    return {"positive": rp, "neutral": rneu, "negative": rn}
+
+
+def heuristic_sentiment_maps(reviews: List[Dict], total: int) -> Dict[str, int]:
+    """Use star ratings when LLM JSON fails (4–5 positive, 3 neutral, 1–2 negative)."""
+    if total <= 0:
+        return {"positive": 0, "neutral": 0, "negative": 0}
+    pos, neg, neutral = 0, 0, 0
+    for r in reviews:
+        rating = int(r.get("rating") or 0)
+        if rating >= 4:
+            pos += 1
+        elif rating <= 2:
+            neg += 1
+        else:
+            neutral += 1
+    s = pos + neg + neutral
+    if s == 0:
+        return {"positive": total, "neutral": 0, "negative": 0}
+    scale = total / s
+    rp = max(0, round(pos * scale))
+    rn = max(0, round(neg * scale))
+    rneu = total - rp - rn
+    if rneu < 0:
+        rneu = 0
+    return {"positive": rp, "neutral": rneu, "negative": rn}
+
+
+def _looks_like_equal_thirds_split(c: Dict[str, int], total: int) -> bool:
+    """Detect ~33/33/34 style outputs (often a bad LLM default)."""
+    if total < 6:
+        return False
+    t = total / 3
+    margin = max(0.02 * total, 2)
+    return all(abs(c.get(k, 0) - t) <= margin for k in ("positive", "neutral", "negative"))
+
+
+def _normalize_action_dict(item: Dict) -> Dict:
+    title = (
+        item.get("title")
+        or item.get("name")
+        or item.get("headline")
+        or item.get("recommendation")
+        or "Recommendation"
+    )
+    title = str(title).strip() or "Recommendation"
+    desc = (
+        item.get("description")
+        or item.get("detail")
+        or item.get("details")
+        or item.get("rationale")
+        or ""
+    )
+    desc = str(desc).strip() or "See comments for details."
+    imp = str(item.get("impact", "Medium")).strip()
+    il = imp.lower()
+    if "high" in il:
+        imp = "High"
+    elif "low" in il:
+        imp = "Low"
+    else:
+        imp = "Medium"
+    return {"title": title, "description": desc, "impact": imp}
+
+
+def _action_array_from_object(obj: Dict) -> Optional[List]:
+    """Many models wrap the array: {\"recommendations\": [...], \"items\": [...]}."""
+    for key in (
+        "recommendations",
+        "items",
+        "actions",
+        "action_items",
+        "data",
+        "suggestions",
+        "list",
+    ):
+        v = obj.get(key)
+        if isinstance(v, list) and v:
+            return v
+    return None
+
+
+def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
+    arr = extract_json_array_from_llm(response_text)
+    if not arr:
+        obj = extract_json_object_from_llm(response_text)
+        if isinstance(obj, dict):
+            arr = _action_array_from_object(obj)
+    if not arr:
+        return []
+    out: List[ActionItem] = []
+    for item in arr:
+        if not isinstance(item, dict):
+            continue
+        try:
+            out.append(ActionItem(**_normalize_action_dict(item)))
+        except Exception:
+            continue
+    return out
+
+
 def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
     """Get AI summary of comments."""
     api_key = os.getenv('TOGETHER_API_KEY')
@@ -367,12 +691,17 @@ Style guidelines:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
+        max_tokens=8000
     )
     
-    return response.choices[0].message.content
+    msg = response.choices[0].message
+    content = msg.content or getattr(msg, "reasoning_content", None) or ""
+    print(f"[DEBUG summary] finish={response.choices[0].finish_reason}, content length={len(content)}, first 200 chars: {content[:200]!r}")
+    if not content.strip():
+        content = "Summary could not be generated. Please try again."
+    return content
 
 
 def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_description: str = "") -> Dict[str, int]:
@@ -412,61 +741,37 @@ def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_de
     
     prompt = f"""Analyze the sentiment of these YouTube comments and categorize each as "positive", "neutral", or "negative".
 
-Return ONLY a JSON object with this format:
+Return ONLY a single JSON object (no markdown fences, no explanation) with this exact shape:
 {{
   "positive": <number>,
   "neutral": <number>,
   "negative": <number>
 }}
+The three numbers must sum to the number of comments analyzed and represent counts of each sentiment.
 
 {video_context}Comments:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
+        max_tokens=8000
     )
     
-    response_text = response.choices[0].message.content.strip()
-    
-    # Extract JSON
-    import json
-    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text)
-    if json_match:
-        try:
-            sentiment_counts = json.loads(json_match.group())
-            
-            # Get sampled count and normalize LLM response first
-            sampled_count = len(sampled_comments)
-            llm_total = sum(sentiment_counts.values())
-            
-            # Scale sentiment counts directly to total_comments
-            # This ensures the pie chart always adds up to the total comment count
-            if llm_total > 0:
-                # Scale factor: total_comments / llm_total
-                # This scales from whatever the LLM returned to the total comment count
-                scale_factor = total_comments / llm_total
-                sentiment_counts = {
-                    "positive": round(sentiment_counts.get("positive", 0) * scale_factor),
-                    "neutral": round(sentiment_counts.get("neutral", 0) * scale_factor),
-                    "negative": round(sentiment_counts.get("negative", 0) * scale_factor)
-                }
-                
-                # Ensure total matches exactly (handle rounding differences)
-                total_sentiment = sum(sentiment_counts.values())
-                if total_sentiment != total_comments:
-                    diff = total_comments - total_sentiment
-                    # Add difference to the largest category
-                    max_key = max(sentiment_counts, key=sentiment_counts.get)
-                    sentiment_counts[max_key] += diff
-            
-            return sentiment_counts
-        except json.JSONDecodeError:
-            pass
-    
-    # Fallback
-    return {"positive": 0, "neutral": 0, "negative": 0}
+    response_text = _extract_llm_text(response)
+    print(f"[DEBUG yt sentiment] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+    obj = extract_json_object_from_llm(response_text)
+    if obj:
+        parsed = _parse_sentiment_counts_from_dict(obj, total_comments)
+        if parsed is not None:
+            h = heuristic_sentiment_youtube(comments, total_comments)
+            # Kimi often returns ~equal thirds; override when keyword heuristic disagrees
+            if _looks_like_equal_thirds_split(parsed, total_comments) and not _looks_like_equal_thirds_split(
+                h, total_comments
+            ):
+                return h
+            return parsed
+    return heuristic_sentiment_youtube(comments, total_comments)
 
 
 def get_action_items(comments: List[Dict], video_title: str = "", video_description: str = "") -> List[ActionItem]:
@@ -503,12 +808,13 @@ def get_action_items(comments: List[Dict], video_title: str = "", video_descript
     
     prompt = f"""Based on these YouTube comments, provide 3-5 specific, actionable recommendations for the creator to improve their next video.
 
-Return ONLY a JSON array with this format:
+Return ONLY a JSON array (no markdown fences, no explanation). Each item must have "title", "description", and "impact" where impact is exactly one of: High, Medium, Low.
+Example shape:
 [
   {{
     "title": "Short action title",
     "description": "Brief explanation of why and how",
-    "impact": "High|Medium|Low"
+    "impact": "High"
   }}
 ]
 
@@ -523,25 +829,23 @@ Focus on:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500
+        max_tokens=8000
     )
     
-    response_text = response.choices[0].message.content.strip()
-    
-    # Extract JSON array
-    import json
-    json_match = re.search(r'\[[\s\S]*\]', response_text)
-    if json_match:
-        try:
-            action_data = json.loads(json_match.group())
-            return [ActionItem(**item) for item in action_data]
-        except (json.JSONDecodeError, ValueError):
-            pass
-    
-    # Fallback
-    return []
+    response_text = _extract_llm_text(response)
+    print(f"[DEBUG yt actions] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+    items = _parse_action_items_from_response(response_text)
+    if items:
+        return items
+    return [
+        ActionItem(
+            title="Review audience feedback in the comment browser",
+            description="Structured recommendations could not be parsed from the model response. Scroll through filtered comments below to spot recurring themes.",
+            impact="Medium",
+        )
+    ]
 
 
 def get_maps_ai_summary(reviews: List[Dict], place_name: str = "", place_address: str = "") -> str:
@@ -592,12 +896,17 @@ Style guidelines:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
+        max_tokens=8000
     )
     
-    return response.choices[0].message.content
+    msg = response.choices[0].message
+    content = msg.content or getattr(msg, "reasoning_content", None) or ""
+    print(f"[DEBUG maps summary] finish={response.choices[0].finish_reason}, content length={len(content)}, first 200 chars: {content[:200]!r}")
+    if not content.strip():
+        content = "Summary could not be generated. Please try again."
+    return content
 
 
 def get_maps_sentiment_analysis(reviews: List[Dict], place_name: str = "") -> Dict[str, int]:
@@ -628,52 +937,36 @@ def get_maps_sentiment_analysis(reviews: List[Dict], place_name: str = "") -> Di
     
     prompt = f"""Analyze the sentiment of these Google Maps reviews and categorize each as "positive", "neutral", or "negative".
 
-Return ONLY a JSON object with this format:
+Return ONLY a single JSON object (no markdown fences, no explanation) with this exact shape:
 {{
   "positive": <number>,
   "neutral": <number>,
   "negative": <number>
 }}
+The three numbers must sum to the number of reviews analyzed and represent counts of each sentiment.
 
 {place_context}Reviews:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
+        max_tokens=8000
     )
     
-    response_text = response.choices[0].message.content.strip()
-    
-    # Extract JSON
-    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text)
-    if json_match:
-        try:
-            sentiment_counts = json.loads(json_match.group())
-            
-            sampled_count = len(sampled_reviews)
-            llm_total = sum(sentiment_counts.values())
-            
-            if llm_total > 0:
-                scale_factor = total_reviews / llm_total
-                sentiment_counts = {
-                    "positive": round(sentiment_counts.get("positive", 0) * scale_factor),
-                    "neutral": round(sentiment_counts.get("neutral", 0) * scale_factor),
-                    "negative": round(sentiment_counts.get("negative", 0) * scale_factor)
-                }
-                
-                total_sentiment = sum(sentiment_counts.values())
-                if total_sentiment != total_reviews:
-                    diff = total_reviews - total_sentiment
-                    max_key = max(sentiment_counts, key=sentiment_counts.get)
-                    sentiment_counts[max_key] += diff
-            
-            return sentiment_counts
-        except json.JSONDecodeError:
-            pass
-    
-    return {"positive": 0, "neutral": 0, "negative": 0}
+    response_text = _extract_llm_text(response)
+    print(f"[DEBUG maps sentiment] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+    obj = extract_json_object_from_llm(response_text)
+    if obj:
+        parsed = _parse_sentiment_counts_from_dict(obj, total_reviews)
+        if parsed is not None:
+            h = heuristic_sentiment_maps(reviews, total_reviews)
+            if _looks_like_equal_thirds_split(parsed, total_reviews) and not _looks_like_equal_thirds_split(
+                h, total_reviews
+            ):
+                return h
+            return parsed
+    return heuristic_sentiment_maps(reviews, total_reviews)
 
 
 def get_maps_action_items(reviews: List[Dict], place_name: str = "") -> List[ActionItem]:
@@ -702,14 +995,7 @@ def get_maps_action_items(reviews: List[Dict], place_name: str = "") -> List[Act
     
     prompt = f"""Based on these Google Maps reviews, provide 3-5 specific, actionable recommendations for the business owner to improve their business.
 
-Return ONLY a JSON array with this format:
-[
-  {{
-    "title": "Short action title",
-    "description": "Brief explanation of why and how",
-    "impact": "High|Medium|Low"
-  }}
-]
+Return ONLY a JSON array (no markdown fences, no explanation). Each item must have "title", "description", and "impact" where impact is exactly one of: High, Medium, Low.
 
 Focus on:
 - Concrete, specific actions (not vague advice)
@@ -722,23 +1008,23 @@ Focus on:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        model="moonshotai/Kimi-K2.5",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500
+        max_tokens=8000
     )
     
-    response_text = response.choices[0].message.content.strip()
-    
-    # Extract JSON array
-    json_match = re.search(r'\[[\s\S]*\]', response_text)
-    if json_match:
-        try:
-            action_data = json.loads(json_match.group())
-            return [ActionItem(**item) for item in action_data]
-        except (json.JSONDecodeError, ValueError):
-            pass
-    
-    return []
+    response_text = _extract_llm_text(response)
+    print(f"[DEBUG maps actions] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+    items = _parse_action_items_from_response(response_text)
+    if items:
+        return items
+    return [
+        ActionItem(
+            title="Review customer feedback in the review browser",
+            description="Structured recommendations could not be parsed from the model response. Use the reviews below to identify recurring themes.",
+            impact="Medium",
+        )
+    ]
 
 
 def assign_sentiments_to_reviews(reviews: List[Dict], sentiment_counts: Dict[str, int]) -> List[Review]:

@@ -39,7 +39,7 @@ A modern, AI-powered web application built for YouTube creators and business own
 - Node.js 18+
 - Python 3.9+
 - [Google Cloud API key](https://console.cloud.google.com/) (for YouTube Data API & Google Places API)
-- [Together AI API key](https://api.together.xyz/) (for Llama 4 Maverick)
+- [Together AI API key](https://api.together.xyz/) (for Kimi K2.5 via Together AI)
 
 ### Option 1: Automated Start (Easiest)
 
@@ -124,7 +124,7 @@ YouTubeComments/
 ### Backend
 
 - **[FastAPI](https://fastapi.tiangolo.com/)** - Modern Python web framework
-- **[Together AI](https://www.together.ai/)** - AI analysis (Llama 4 Maverick)
+- **[Together AI](https://www.together.ai/)** - AI analysis (moonshotai/Kimi-K2.5)
 - **[YouTube Data API v3](https://developers.google.com/youtube/v3)** - Comment fetching
 - **[Google Places API (New)](https://developers.google.com/maps/documentation/places/web-service)** - Review fetching
 - **[Pydantic](https://docs.pydantic.dev/)** - Data validation
@@ -344,7 +344,7 @@ Questions? Feedback? Reach out!
 
 - [Next.js](https://nextjs.org/) for the amazing framework
 - [shadcn](https://twitter.com/shadcn) for the beautiful UI components
-- [Together AI](https://www.together.ai/) for Llama 4 Maverick access
+- [Together AI](https://www.together.ai/) for Kimi K2.5 access
 - [Vercel](https://vercel.com/) & [Render](https://render.com/) for hosting
 - [Clerk](https://clerk.com/) for authentication
 - [Stripe](https://stripe.com/) for payment processing

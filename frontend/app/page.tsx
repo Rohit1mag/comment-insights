@@ -522,7 +522,7 @@ export default function Home() {
         <div className="container mx-auto px-6 py-12">
           <div className="text-center text-sm text-gray-500">
             <p className="mb-2">Built for creators and businesses who want to improve</p>
-            <p className="text-gray-600">Powered by Llama 4 Maverick, YouTube Data API & Google Places API</p>
+            <p className="text-gray-600">Powered by Kimi K2.5, YouTube Data API & Google Places API</p>
           </div>
         </div>
       </footer>
