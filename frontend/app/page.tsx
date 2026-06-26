@@ -278,7 +278,7 @@ export default function Home() {
             {/* Hero Section */}
             <div className="max-w-4xl mx-auto text-center mb-16">
               <Badge className="mb-8 animate-in-1 bg-blue-500/10 text-blue-300 border-blue-400/30 rounded-full px-4 py-1.5 text-sm font-medium" variant="secondary">
-                AI-Powered Analysis
+                Powered by DeepSeek V4 Pro
               </Badge>
               <h2 className="text-6xl md:text-7xl font-bold mb-6 animate-in-2 leading-tight">
                 <span className="block gradient-text" style={{ 
@@ -385,7 +385,7 @@ export default function Home() {
 
               <p className="text-sm text-gray-500">
                 {isSignedIn 
-                  ? `Analysis typically takes 15-30 seconds • Works with any public ${activeTab === "youtube" ? "YouTube video" : "Google Maps place"}`
+                  ? `Analysis typically takes 15-30 seconds • DeepSeek V4 Pro • Works with any public ${activeTab === "youtube" ? "YouTube video" : "Google Maps place"}`
                   : "Sign in to get started • Free users get 5 analyses"}
               </p>
             </div>
