@@ -691,7 +691,7 @@ Style guidelines:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )
@@ -753,7 +753,7 @@ The three numbers must sum to the number of comments analyzed and represent coun
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )
@@ -829,7 +829,7 @@ Focus on:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )
@@ -896,7 +896,7 @@ Style guidelines:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )
@@ -949,7 +949,7 @@ The three numbers must sum to the number of reviews analyzed and represent count
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )
@@ -1008,7 +1008,7 @@ Focus on:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="moonshotai/Kimi-K2.5",
+        model="deepseek-ai/DeepSeek-V4-Pro",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=8000
     )

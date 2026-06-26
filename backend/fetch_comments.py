@@ -252,7 +252,7 @@ def summarize_constructive_criticism(comments):
 
     try:
         response = client.chat.completions.create(
-            model="moonshotai/Kimi-K2.5",
+            model="deepseek-ai/DeepSeek-V4-Pro",
             messages=[
                 {
                     "role": "user",
