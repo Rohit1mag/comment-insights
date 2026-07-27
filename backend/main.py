@@ -40,7 +40,7 @@ except ImportError:
 
 app = FastAPI(title="YouTube Comment Insights API")
 
-LLM_MODEL = "MiniMaxAI/MiniMax-M3"
+LLM_MODEL = "google/gemma-4-31B-it"
 # Together SDK default timeout is ~60s; large comment prompts need longer
 LLM_TIMEOUT_SECS = 300.0
 

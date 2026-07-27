@@ -252,7 +252,7 @@ def summarize_constructive_criticism(comments):
 
     try:
         response = client.chat.completions.create(
-            model="MiniMaxAI/MiniMax-M3",
+            model="google/gemma-4-31B-it",
             messages=[
                 {
                     "role": "user",
