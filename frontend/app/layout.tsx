@@ -6,8 +6,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "YouTube Comment Insights - Turn Comments into Actionable Feedback",
-  description: "AI-powered analysis that transforms your YouTube comments into concrete improvements for your next video.",
+  title: "Distill — Turn Reviews into Actionable Feedback",
+  description: "AI-powered analysis that transforms YouTube comments and Google Maps reviews into clear, actionable insights.",
 };
 
 export default function RootLayout({

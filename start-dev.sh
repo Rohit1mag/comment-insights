@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🚀 Starting YouTube Comment Insights Development Servers..."
+echo "🚀 Starting Distill development servers..."
 echo ""
 
 # Check if .env file exists
