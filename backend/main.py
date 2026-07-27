@@ -7,6 +7,7 @@ import os
 import re
 import json
 import random
+import asyncio
 from datetime import datetime
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs
@@ -38,6 +39,19 @@ except ImportError:
     pass
 
 app = FastAPI(title="YouTube Comment Insights API")
+
+LLM_MODEL = "MiniMaxAI/MiniMax-M3"
+# Together SDK default timeout is ~60s; large comment prompts need longer
+LLM_TIMEOUT_SECS = 300.0
+
+
+def get_together_client() -> Together:
+    """Create a Together client with a production-safe timeout."""
+    api_key = os.getenv("TOGETHER_API_KEY")
+    if not api_key:
+        raise ValueError("TOGETHER_API_KEY not set")
+    return Together(api_key=api_key, timeout=LLM_TIMEOUT_SECS, max_retries=2)
+
 
 # Usage tracking
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
@@ -642,11 +656,7 @@ def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
 
 def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
     """Get AI summary of comments."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
@@ -691,9 +701,9 @@ Style guidelines:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=2000
     )
     
     msg = response.choices[0].message
@@ -706,11 +716,7 @@ Style guidelines:
 
 def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_description: str = "") -> Dict[str, int]:
     """Get sentiment breakdown of comments."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     # Store total comment count before sampling
     total_comments = len(comments)
@@ -753,9 +759,9 @@ The three numbers must sum to the number of comments analyzed and represent coun
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=500
     )
     
     response_text = _extract_llm_text(response)
@@ -776,11 +782,7 @@ The three numbers must sum to the number of comments analyzed and represent coun
 
 def get_action_items(comments: List[Dict], video_title: str = "", video_description: str = "") -> List[ActionItem]:
     """Get actionable recommendations from comments."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
@@ -829,9 +831,9 @@ Focus on:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=1500
     )
     
     response_text = _extract_llm_text(response)
@@ -850,11 +852,7 @@ Focus on:
 
 def get_maps_ai_summary(reviews: List[Dict], place_name: str = "", place_address: str = "") -> str:
     """Get AI summary of Google Maps reviews."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     # Smart sampling for production
     if len(reviews) > 500:
@@ -896,9 +894,9 @@ Style guidelines:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=2000
     )
     
     msg = response.choices[0].message
@@ -911,11 +909,7 @@ Style guidelines:
 
 def get_maps_sentiment_analysis(reviews: List[Dict], place_name: str = "") -> Dict[str, int]:
     """Get sentiment breakdown of Google Maps reviews."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     total_reviews = len(reviews)
     
@@ -949,9 +943,9 @@ The three numbers must sum to the number of reviews analyzed and represent count
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=500
     )
     
     response_text = _extract_llm_text(response)
@@ -971,11 +965,7 @@ The three numbers must sum to the number of reviews analyzed and represent count
 
 def get_maps_action_items(reviews: List[Dict], place_name: str = "") -> List[ActionItem]:
     """Get actionable recommendations from Google Maps reviews."""
-    api_key = os.getenv('TOGETHER_API_KEY')
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    
-    client = Together(api_key=api_key)
+    client = get_together_client()
     
     # Smart sampling
     if len(reviews) > 500:
@@ -1008,9 +998,9 @@ Focus on:
 {reviews_text}"""
     
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-V4-Pro",
+        model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=8000
+        max_tokens=1500
     )
     
     response_text = _extract_llm_text(response)
@@ -1474,11 +1464,12 @@ async def analyze_video(request: AnalyzeRequest):
         if not comments:
             raise HTTPException(status_code=404, detail="No comments found for this video")
         
-        # Get AI analysis (parallel would be better, but keeping it simple)
-        # Pass video context to help LLM provide better analysis
-        summary = get_ai_summary(comments, video_title, video_description)
-        sentiment = get_sentiment_analysis(comments, video_title, video_description)
-        action_items = get_action_items(comments, video_title, video_description)
+        # Run AI analysis in parallel
+        summary, sentiment, action_items = await asyncio.gather(
+            asyncio.to_thread(get_ai_summary, comments, video_title, video_description),
+            asyncio.to_thread(get_sentiment_analysis, comments, video_title, video_description),
+            asyncio.to_thread(get_action_items, comments, video_title, video_description),
+        )
         
         # Assign sentiments to comments
         comments_with_sentiment = assign_sentiments_to_comments(comments, sentiment)
@@ -1544,10 +1535,12 @@ async def analyze_maps_place(request: AnalyzeMapsRequest):
         if not reviews:
             raise HTTPException(status_code=404, detail="No reviews found for this place")
         
-        # Get AI analysis
-        summary = get_maps_ai_summary(reviews, place_info['name'], place_info['address'])
-        sentiment = get_maps_sentiment_analysis(reviews, place_info['name'])
-        action_items = get_maps_action_items(reviews, place_info['name'])
+        # Run AI analysis in parallel
+        summary, sentiment, action_items = await asyncio.gather(
+            asyncio.to_thread(get_maps_ai_summary, reviews, place_info['name'], place_info['address']),
+            asyncio.to_thread(get_maps_sentiment_analysis, reviews, place_info['name']),
+            asyncio.to_thread(get_maps_action_items, reviews, place_info['name']),
+        )
         
         # Assign sentiments to reviews
         reviews_with_sentiment = assign_sentiments_to_reviews(reviews, sentiment)

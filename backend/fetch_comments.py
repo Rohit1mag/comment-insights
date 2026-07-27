@@ -216,7 +216,7 @@ def summarize_constructive_criticism(comments):
             "Please set it using: export TOGETHER_API_KEY='your_api_key'"
         )
     
-    client = Together(api_key=api_key)
+    client = Together(api_key=api_key, timeout=300.0, max_retries=2)
     
     # Prepare comments text for Claude
     comments_text = "\n\n".join([
@@ -252,7 +252,7 @@ def summarize_constructive_criticism(comments):
 
     try:
         response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-V4-Pro",
+            model="MiniMaxAI/MiniMax-M3",
             messages=[
                 {
                     "role": "user",
