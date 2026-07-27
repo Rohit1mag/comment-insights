@@ -18,12 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 import stripe
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from io import BytesIO
 
 # Import from local module (same directory)
@@ -39,6 +33,11 @@ except ImportError:
     pass
 
 app = FastAPI(title="Distill API")
+
+
+@app.on_event("startup")
+async def startup_event():
+    print(f"Distill API started (model={LLM_MODEL})")
 
 LLM_MODEL = "google/gemma-4-31B-it"
 # Together SDK default timeout is ~60s; large comment prompts need longer
@@ -1101,6 +1100,13 @@ def generate_pdf_report(
     action_items: List[ActionItem]
 ) -> BytesIO:
     """Generate a PDF report from analysis results."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
     
