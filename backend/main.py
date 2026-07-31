@@ -87,10 +87,12 @@ def _stream_delta_text(chunk) -> str:
         return ""
 
 
-# Usage tracking
-USAGE_FILE = Path(__file__).parent / "usage_data.json"
-SUBSCRIPTIONS_FILE = Path(__file__).parent / "subscriptions_data.json"
-GUEST_USAGE_FILE = Path(__file__).parent / "guest_usage.json"
+# Usage tracking — /tmp on Vercel (writable); local files for dev
+_DATA_DIR = Path("/tmp/disstill") if os.getenv("VERCEL") else Path(__file__).parent
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+USAGE_FILE = _DATA_DIR / "usage_data.json"
+SUBSCRIPTIONS_FILE = _DATA_DIR / "subscriptions_data.json"
+GUEST_USAGE_FILE = _DATA_DIR / "guest_usage.json"
 
 # Guest trial: 1 free analysis per guest cookie; IP soft-cap for spray abuse
 GUEST_COOKIE_NAME = "disstill_guest_id"

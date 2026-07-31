@@ -26,7 +26,7 @@ A modern, AI-powered web application built for YouTube creators and business own
 - 🔒 **Type-Safe** - Full TypeScript on frontend
 - 📈 **Data Viz** - Interactive charts with Recharts
 - 🎨 **Design System** - shadcn/ui components with Tailwind CSS
-- 🌐 **Production Ready** - Deployed on Vercel (frontend) + Render (backend)
+- 🌐 **Production Ready** - Deployed on Vercel Services (Next.js + FastAPI)
 - 💳 **Payment Integration** - Stripe subscription tiers (Free, Pro, Unlimited)
 - 🔐 **Authentication** - Clerk user management with usage tracking
 
@@ -134,8 +134,8 @@ YouTubeComments/
 
 ### Deployment
 
-- **Frontend**: [Vercel](https://vercel.com/)
-- **Backend**: [Render](https://render.com/)
+- **Platform**: [Vercel Services](https://vercel.com/docs/services) — Next.js + FastAPI in one project
+- `/api/python/*` → FastAPI (`backend/`), everything else → Next.js (`frontend/`)
 
 ---
 
@@ -225,12 +225,18 @@ Analyzes a Google Maps place's reviews and returns insights.
 
 ## 🌐 Deployment
 
-Currently deployed and running in production:
+One Vercel project runs both services (see root `vercel.json`):
 
-- **Frontend**: Deployed on [Vercel](https://vercel.com)
-- **Backend**: Deployed on [Render](https://render.com)
+1. Import the repo in [Vercel](https://vercel.com) (root directory = repo root, not `frontend/`)
+2. Set **Framework Preset** to **Services** (Build & Deployment settings)
+3. Add env vars to the project (shared across services):
+   - `YOUTUBE_API_KEY`, `TOGETHER_API_KEY`
+   - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
+   - Stripe (if used): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`
+   - Optional: `FRONTEND_ORIGINS` (comma-separated; defaults include localhost)
+4. Deploy. API is same-origin at `/api/python/*` (Stripe webhook: `/api/python/webhook`)
 
-📖 **Step-by-step guide:** [DEPLOYMENT.md](DEPLOYMENT.md)
+Local alternative to `./start-dev.sh`: `npx vercel dev` (runs both services with the same routing).
 
 ---
 

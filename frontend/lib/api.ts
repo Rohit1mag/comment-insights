@@ -1,7 +1,6 @@
 /**
- * Always hit the same-origin Next rewrite so the HttpOnly guest cookie
- * stays first-party. Cross-origin NEXT_PUBLIC_API_URL breaks the trial.
- * Point PYTHON_API_URL at the FastAPI backend for the rewrite target.
+ * Same-origin API path. On Vercel Services, /api/python is routed to FastAPI.
+ * Locally, next.config rewrites it to uvicorn (PYTHON_API_URL).
  */
 export function getApiUrl(): string {
   return "/api/python";

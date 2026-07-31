@@ -28,7 +28,7 @@
 
    - Go to https://dashboard.stripe.com/test/webhooks
    - Click "Add endpoint"
-   - Endpoint URL: `https://your-backend-url.com/webhook` (or `http://localhost:8000/webhook` for local testing)
+   - Endpoint URL: `https://your-app.vercel.app/api/python/webhook` (or `http://localhost:8000/webhook` for local testing)
    - Select events to listen to:
      - `checkout.session.completed`
      - `customer.subscription.deleted`
