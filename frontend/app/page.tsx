@@ -99,7 +99,7 @@ function GuestSignupCta({ message }: { message?: string }) {
     <div className="border border-amber-400/30 bg-amber-500/10 p-5 mb-6 max-w-2xl mx-auto rounded-2xl backdrop-blur-xl text-left">
       <p className="text-sm text-amber-100 font-medium mb-3">
         {message ||
-          "You've used your free guest analysis. Sign up to get 5 analyses per month."}
+          "You've used your free guest analysis. Sign up to get 5 free analyses a month."}
       </p>
       <div className="flex flex-wrap gap-3">
         <SignInButton mode="modal">
@@ -545,7 +545,7 @@ export default function Home() {
                 <GuestSignupCta
                   message={
                     usage && usage.remaining <= 0
-                      ? "You've used your free guest analysis. Sign up to get 5 analyses per month."
+                      ? "You've used your free guest analysis. Sign up to get 5 free analyses a month."
                       : undefined
                   }
                 />
@@ -564,8 +564,8 @@ export default function Home() {
                 {isSignedIn
                   ? "Analysis typically takes 15-30 seconds • Works with any public YouTube video"
                   : usage && usage.remaining <= 0
-                  ? "Free guest analysis used — sign up for 5 analyses/month"
-                  : "Try 1 free analysis — no account needed • Sign up for 5/month"}
+                  ? "Free guest analysis used — sign up for 5 free analyses a month"
+                  : "Try 1 free analysis — no account needed • Sign up for 5 free analyses a month"}
               </p>
             </div>
 
@@ -676,7 +676,7 @@ export default function Home() {
           <>
             {showGuestSignupCta && isGuest && !isStreaming && (
               <div className="max-w-4xl mx-auto mb-6">
-                <GuestSignupCta message="Enjoying the insights? Sign up to keep analyzing — free accounts get 5 analyses/month." />
+                <GuestSignupCta message="Enjoying the insights? Sign up to keep analyzing — free accounts get 5 analyses a month." />
               </div>
             )}
             <AnalysisResults
