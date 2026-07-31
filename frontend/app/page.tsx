@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, TrendingUp, MessageSquare, CheckCircle2, Loader2, Youtube, Sparkles, Zap, MapPin } from "lucide-react";
+import { Search, TrendingUp, MessageSquare, CheckCircle2, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
 import {
   SignInButton,
   SignUpButton,
@@ -24,13 +24,75 @@ interface UsageData {
   tier: string;
 }
 
+interface AnalysisData {
+  video_id?: string;
+  video_title?: string;
+  total_comments?: number;
+  summary: string;
+  sentiment: {
+    positive: number;
+    neutral: number;
+    negative: number;
+  };
+  action_items: Array<{
+    title: string;
+    description: string;
+    impact: string;
+  }>;
+}
+
+async function consumeSse(
+  response: Response,
+  handlers: Record<string, (data: any) => void>
+) {
+  if (!response.body) {
+    throw new Error("No response body");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE events are separated by blank lines
+    let sep;
+    while ((sep = buffer.indexOf("\n\n")) >= 0) {
+      const rawEvent = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+
+      let eventName = "message";
+      const dataLines: string[] = [];
+      for (const line of rawEvent.split("\n")) {
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      if (dataLines.length === 0) continue;
+      const dataStr = dataLines.join("\n");
+      let parsed: any = dataStr;
+      try {
+        parsed = JSON.parse(dataStr);
+      } catch {
+        /* keep raw string */
+      }
+      const handler = handlers[eventName];
+      if (handler) handler(parsed);
+    }
+  }
+}
+
 export default function Home() {
   const { user, isSignedIn } = useUser();
-  const [activeTab, setActiveTab] = useState<"youtube" | "maps">("youtube");
   const [videoUrl, setVideoUrl] = useState("");
-  const [mapsUrl, setMapsUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [analysisData, setAnalysisData] = useState(null);
+  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [summaryStreaming, setSummaryStreaming] = useState(false);
   const [error, setError] = useState("");
   const [loadingStep, setLoadingStep] = useState("");
   const [usage, setUsage] = useState<UsageData | null>(null);
@@ -73,16 +135,9 @@ export default function Home() {
   }, [userEmail]);
 
   const handleAnalyze = async () => {
-    if (activeTab === "youtube") {
-      if (!videoUrl) {
-        setError("Please enter a YouTube URL");
-        return;
-      }
-    } else {
-      if (!mapsUrl) {
-        setError("Please enter a Google Maps URL");
-        return;
-      }
+    if (!videoUrl) {
+      setError("Please enter a YouTube URL");
+      return;
     }
 
     if (!isSignedIn || !userEmail) {
@@ -90,99 +145,150 @@ export default function Home() {
       return;
     }
 
-    // Check usage limit before making request
     if (usage && !usage.is_unlimited && usage.remaining <= 0) {
-      setError(`You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month!`);
+      setError(
+        `You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month!`
+      );
       return;
     }
 
     setError("");
     setLoading(true);
+    setAnalysisData(null);
+    setIsStreaming(false);
+    setSummaryStreaming(false);
 
     try {
-      // Use environment variable if set, otherwise detect dev/prod
       const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-      const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
-      
-      // Create abort controller for timeout (5 minutes)
+      const isDev =
+        window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      const apiUrl = envApiUrl || (isDev ? "http://localhost:8000" : "/api/python");
+
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
-      
-      let response;
+      const timeoutId = setTimeout(() => controller.abort(), 300000);
+
+      setLoadingStep("Fetching comments from YouTube…");
+
+      let response: Response;
       try {
-        if (activeTab === "youtube") {
-          setLoadingStep("Extracting video ID...");
-          setLoadingStep("Fetching all comments from YouTube... (this may take a minute for videos with many comments)");
-          
-          response = await fetch(`${apiUrl}/analyze`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ 
-              video_url: videoUrl,
-              user_email: userEmail 
-            }),
-            signal: controller.signal,
-          });
-        } else {
-          setLoadingStep("Extracting place ID from Google Maps...");
-          setLoadingStep("Fetching reviews from Google Places...");
-          
-          response = await fetch(`${apiUrl}/analyze-maps`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ 
-              maps_url: mapsUrl,
-              user_email: userEmail 
-            }),
-            signal: controller.signal,
-          });
-        }
+        response = await fetch(`${apiUrl}/analyze/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ video_url: videoUrl, user_email: userEmail }),
+          signal: controller.signal,
+        });
       } finally {
         clearTimeout(timeoutId);
       }
 
       if (!response.ok) {
-        // Read response as text first (can only read body once)
         const errorText = await response.text();
         let errorMessage = "Failed to analyze";
-        
-        // Try to parse as JSON
         try {
           const errorData = JSON.parse(errorText);
           errorMessage = errorData.detail || errorData.message || errorMessage;
         } catch {
-          // If not JSON, use the text as-is
           errorMessage = errorText || errorMessage;
         }
         throw new Error(errorMessage);
       }
 
-      setLoadingStep("Analyzing with AI...");
-      const data = await response.json();
-      setAnalysisData(data);
+      let streamError: string | null = null;
+      let credited = false;
 
-      // Update usage count after successful analysis
-      if (usage && !usage.is_unlimited) {
-        setUsage({
-          ...usage,
-          used: usage.used + 1,
-          remaining: usage.remaining - 1,
-        });
-        // Show credit used notification
-        setCreditUsedNotification(true);
-        setTimeout(() => setCreditUsedNotification(false), 5000);
+      await consumeSse(response, {
+        meta: (meta) => {
+          setLoading(false);
+          setIsStreaming(true);
+          setSummaryStreaming(true);
+          setLoadingStep("Generating insights…");
+          const sentiment = meta?.sentiment || {
+            positive: 0,
+            neutral: 0,
+            negative: 0,
+          };
+          setAnalysisData({
+            ...meta,
+            summary: "",
+            sentiment,
+            action_items: [],
+          });
+        },
+        sentiment: (sentiment) => {
+          setAnalysisData((prev) =>
+            prev
+              ? { ...prev, sentiment }
+              : {
+                  summary: "",
+                  sentiment,
+                  action_items: [],
+                }
+          );
+        },
+        summary_delta: (payload) => {
+          const text = payload?.text ?? "";
+          if (!text) return;
+          setAnalysisData((prev) =>
+            prev
+              ? { ...prev, summary: (prev.summary || "") + text }
+              : { summary: text, sentiment: { positive: 0, neutral: 0, negative: 0 }, action_items: [] }
+          );
+        },
+        summary: (payload) => {
+          const text = payload?.text ?? "";
+          setSummaryStreaming(false);
+          setAnalysisData((prev) =>
+            prev
+              ? { ...prev, summary: text || prev.summary }
+              : {
+                  summary: text,
+                  sentiment: { positive: 0, neutral: 0, negative: 0 },
+                  action_items: [],
+                }
+          );
+        },
+        action_items: (items) => {
+          setAnalysisData((prev) =>
+            prev
+              ? { ...prev, action_items: Array.isArray(items) ? items : [] }
+              : {
+                  summary: "",
+                  sentiment: { positive: 0, neutral: 0, negative: 0 },
+                  action_items: Array.isArray(items) ? items : [],
+                }
+          );
+        },
+        done: () => {
+          setIsStreaming(false);
+          setSummaryStreaming(false);
+          setLoadingStep("");
+          if (!credited && usage && !usage.is_unlimited) {
+            credited = true;
+            setUsage({
+              ...usage,
+              used: usage.used + 1,
+              remaining: usage.remaining - 1,
+            });
+            setCreditUsedNotification(true);
+            setTimeout(() => setCreditUsedNotification(false), 5000);
+          }
+        },
+        error: (payload) => {
+          streamError = payload?.detail || "Analysis failed";
+        },
+      });
+
+      if (streamError) {
+        throw new Error(streamError);
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
+      if (err.name === "AbortError") {
         setError("Request timed out. Please try again.");
       } else {
         setError(err.message || "Something went wrong. Please try again.");
       }
+      setIsStreaming(false);
+      setSummaryStreaming(false);
     } finally {
       setLoading(false);
       setLoadingStep("");
@@ -286,66 +392,28 @@ export default function Home() {
                   backgroundSize: '200% 200%',
                   animation: 'gradient-shift 5s ease infinite'
                 }}>
-                  Transform Reviews
+                  Transform Comments
                 </span>
                 <span className="block text-gray-300 mt-3">
                   Into Insights
                 </span>
               </h2>
               <p className="text-xl text-gray-400 mb-12 animate-in-3 max-w-2xl mx-auto leading-relaxed">
-                Get actionable feedback from YouTube comments or Google Maps reviews. 
-                Understand sentiment, discover patterns, and improve your content or business.
+                Get actionable feedback from YouTube comments.
+                Understand sentiment, discover patterns, and improve your content.
               </p>
-
-              {/* Tab Navigation */}
-              <div className="flex gap-3 max-w-md mx-auto mb-8 animate-in-3 p-1.5 bg-white/5 rounded-2xl border border-white/10">
-                <button
-                  onClick={() => setActiveTab("youtube")}
-                  className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ${
-                    activeTab === "youtube"
-                      ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg"
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
-                  }`}
-                >
-                  <Youtube className="h-5 w-5" />
-                  YouTube
-                </button>
-                <button
-                  onClick={() => setActiveTab("maps")}
-                  className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ${
-                    activeTab === "maps"
-                      ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-lg"
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
-                  }`}
-                >
-                  <MapPin className="h-5 w-5" />
-                  Google Maps
-                </button>
-              </div>
 
               {/* Input Section */}
               <div className="flex gap-3 max-w-3xl mx-auto mb-8 animate-in-4">
-                {activeTab === "youtube" ? (
-                  <Input
-                    type="text"
-                    placeholder="Paste YouTube video URL..."
-                    value={videoUrl}
-                    onChange={(e) => setVideoUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-                    className="h-14 text-base bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-2xl transition-all duration-300 hover:bg-white/8 focus:bg-white/8 shadow-lg"
-                    disabled={loading}
-                  />
-                ) : (
-                  <Input
-                    type="text"
-                    placeholder="Paste Google Maps place URL..."
-                    value={mapsUrl}
-                    onChange={(e) => setMapsUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-                    className="h-14 text-base bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-2xl transition-all duration-300 hover:bg-white/8 focus:bg-white/8 shadow-lg"
-                    disabled={loading}
-                  />
-                )}
+                <Input
+                  type="text"
+                  placeholder="Paste YouTube video URL..."
+                  value={videoUrl}
+                  onChange={(e) => setVideoUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
+                  className="h-14 text-base bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-2xl transition-all duration-300 hover:bg-white/8 focus:bg-white/8 shadow-lg"
+                  disabled={loading}
+                />
                 <Button
                   onClick={handleAnalyze}
                   disabled={loading}
@@ -385,7 +453,7 @@ export default function Home() {
 
               <p className="text-sm text-gray-500">
                 {isSignedIn 
-                  ? `Analysis typically takes 15-30 seconds • Works with any public ${activeTab === "youtube" ? "YouTube video" : "Google Maps place"}`
+                  ? "Analysis typically takes 15-30 seconds • Works with any public YouTube video"
                   : "Sign in to get started • Free users get 5 analyses"}
               </p>
             </div>
@@ -426,10 +494,10 @@ export default function Home() {
                     <MessageSquare className="h-8 w-8 text-cyan-400" />
                   </div>
                   <CardTitle className="text-xl mb-3 font-bold">
-                    Smart Filtering
+                    Clear Summaries
                   </CardTitle>
                   <CardDescription className="text-gray-400 leading-relaxed">
-                    Browse reviews and comments with intelligent filters to find what matters most
+                    Get a concise read on overall sentiment and the feedback that actually matters
                   </CardDescription>
                 </CardHeader>
               </Card>
@@ -494,7 +562,16 @@ export default function Home() {
 
           </>
         ) : (
-          <AnalysisResults data={analysisData} onNewAnalysis={() => setAnalysisData(null)} />
+          <AnalysisResults
+            data={analysisData}
+            isStreaming={isStreaming}
+            summaryStreaming={summaryStreaming}
+            onNewAnalysis={() => {
+              setAnalysisData(null);
+              setIsStreaming(false);
+              setSummaryStreaming(false);
+            }}
+          />
         )}
       </main>
 
@@ -521,8 +598,8 @@ export default function Home() {
       <footer className="border-t border-white/5 mt-32">
         <div className="container mx-auto px-6 py-12">
           <div className="text-center text-sm text-gray-500">
-            <p className="mb-2">Built for creators and businesses who want to improve</p>
-            <p className="text-gray-600">Powered by Gemma 4, YouTube Data API & Google Places API</p>
+            <p className="mb-2">Built for creators who want to improve</p>
+            <p className="text-gray-600">Powered by Gemma 4 & YouTube Data API</p>
           </div>
         </div>
       </footer>

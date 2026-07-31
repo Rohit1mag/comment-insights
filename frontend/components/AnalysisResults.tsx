@@ -1,52 +1,25 @@
 "use client";
 
-import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   ArrowLeft,
   TrendingUp,
   TrendingDown,
   Minus,
   CheckCircle2,
-  AlertCircle,
-  ThumbsUp,
-  Calendar,
-  User,
-  Filter,
-  X,
   MessageSquare,
   Download,
+  Loader2,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
-
-interface Comment {
-  author: string;
-  text: string;
-  like_count?: number;
-  rating?: number;
-  published_at: string;
-  sentiment?: string;
-}
+import { useState } from "react";
 
 interface AnalysisData {
-  // YouTube fields
   video_id?: string;
   video_title?: string;
   total_comments?: number;
-  comments?: Comment[];
-  
-  // Google Maps fields
-  place_id?: string;
-  place_name?: string;
-  place_address?: string;
-  place_rating?: number;
-  total_reviews?: number;
-  reviews?: Comment[];
-  
-  // Common fields
   summary: string;
   sentiment: {
     positive: number;
@@ -63,6 +36,8 @@ interface AnalysisData {
 interface AnalysisResultsProps {
   data: AnalysisData;
   onNewAnalysis: () => void;
+  isStreaming?: boolean;
+  summaryStreaming?: boolean;
 }
 
 const SENTIMENT_COLORS = {
@@ -71,23 +46,18 @@ const SENTIMENT_COLORS = {
   negative: "#ec4899",
 };
 
-export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResultsProps) {
-  const [sentimentFilter, setSentimentFilter] = useState<string[]>([]);
-  const [minLikes, setMinLikes] = useState(0);
-  const [searchTerm, setSearchTerm] = useState("");
+export default function AnalysisResults({
+  data,
+  onNewAnalysis,
+  isStreaming = false,
+  summaryStreaming = false,
+}: AnalysisResultsProps) {
   const [isDownloading, setIsDownloading] = useState(false);
-  
-  // Determine if this is YouTube or Google Maps data
-  const isYouTube = !!data.video_id;
-  const isMaps = !!data.place_id;
-  
-  // Normalize data fields
-  const items = (data.comments || data.reviews || []) as Comment[];
-  const totalCount = data.total_comments || data.total_reviews || 0;
-  const title = data.video_title || data.place_name || '';
-  const itemId = data.video_id || data.place_id || '';
 
-  // Prepare chart data
+  const totalCount = data.total_comments || 0;
+  const title = data.video_title || "";
+  const itemId = data.video_id || "";
+
   const chartData = [
     { name: "Positive", value: data.sentiment.positive, color: SENTIMENT_COLORS.positive },
     { name: "Neutral", value: data.sentiment.neutral, color: SENTIMENT_COLORS.neutral },
@@ -97,11 +67,12 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
   const handleDownloadPDF = async () => {
     setIsDownloading(true);
     try {
-      // Use same API URL detection as main page
       const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-      const isDev = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-      const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
-      
+      const isDev =
+        typeof window !== "undefined" &&
+        (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+      const apiUrl = envApiUrl || (isDev ? "http://localhost:8000" : "/api/python");
+
       const response = await fetch(`${apiUrl}/analyze/pdf`, {
         method: "POST",
         headers: {
@@ -109,7 +80,7 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
         },
         body: JSON.stringify({
           video_id: itemId,
-          video_title: title || `${isYouTube ? 'YouTube Video' : 'Google Maps Place'} ${itemId}`,
+          video_title: title || `YouTube Video ${itemId}`,
           total_comments: totalCount,
           summary: data.summary,
           sentiment: data.sentiment,
@@ -129,7 +100,6 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
         throw new Error(errorMessage);
       }
 
-      // Check if response is actually a PDF
       const contentType = response.headers.get("content-type");
       if (!contentType || !contentType.includes("application/pdf")) {
         const errorText = await response.text();
@@ -138,8 +108,6 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
       }
 
       const blob = await response.blob();
-      
-      // Verify blob is not empty
       if (blob.size === 0) {
         throw new Error("PDF file is empty");
       }
@@ -147,56 +115,28 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${isYouTube ? 'youtube' : 'maps'}_analysis_${itemId}_${new Date().toISOString().split("T")[0]}.pdf`;
+      a.download = `youtube_analysis_${itemId}_${new Date().toISOString().split("T")[0]}.pdf`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error downloading PDF:", error);
-      alert(`Failed to download PDF: ${error.message || "Please try again."}`);
     } finally {
       setIsDownloading(false);
     }
   };
 
-  // Filter items (comments or reviews)
-  const filteredItems = items.filter((item) => {
-    if (sentimentFilter.length > 0 && item.sentiment && !sentimentFilter.includes(item.sentiment)) {
-      return false;
-    }
-    const itemScore = item.like_count || 0;
-    if (itemScore < minLikes) {
-      return false;
-    }
-    if (searchTerm && !item.text.toLowerCase().includes(searchTerm.toLowerCase())) {
-      return false;
-    }
-    return true;
-  });
-
-  const toggleSentimentFilter = (sentiment: string) => {
-    setSentimentFilter((prev) =>
-      prev.includes(sentiment) ? prev.filter((s) => s !== sentiment) : [...prev, sentiment]
-    );
-  };
-
-  const clearFilters = () => {
-    setSentimentFilter([]);
-    setMinLikes(0);
-    setSearchTerm("");
-  };
-
-  const hasActiveFilters = sentimentFilter.length > 0 || minLikes > 0 || searchTerm !== "";
+  const summaryParagraphs = (data.summary || "")
+    .split("\n\n")
+    .filter((p) => p.trim());
 
   return (
-    <div className="max-w-7xl mx-auto relative z-10">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">
       <div className="mb-12 animate-in-1">
-        <div className="flex items-center justify-between mb-8">
-          <Button 
-            variant="ghost" 
-            onClick={onNewAnalysis} 
+        <div className="flex flex-wrap items-center gap-3 mb-6">
+          <Button
+            onClick={onNewAnalysis}
             className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 hover:text-white transition-all duration-300 rounded-xl px-5 py-2.5"
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
@@ -204,36 +144,31 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
           </Button>
           <Button
             onClick={handleDownloadPDF}
-            disabled={isDownloading}
+            disabled={isDownloading || isStreaming || !data.summary}
             className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-white bg-gradient-to-r from-blue-500/20 to-purple-500/20 hover:from-blue-500/30 hover:to-purple-500/30 transition-all duration-300 rounded-xl px-6 py-2.5 font-medium"
           >
             <Download className="mr-2 h-4 w-4" />
             {isDownloading ? "Generating PDF..." : "Download PDF Report"}
           </Button>
         </div>
-        <h2 className="text-5xl font-bold mb-4 gradient-text" style={{ 
-          backgroundImage: 'linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))',
-          backgroundSize: '200% 200%',
-          animation: 'gradient-shift 3s ease infinite'
-        }}>
+        <h2
+          className="text-5xl font-bold mb-4 gradient-text"
+          style={{
+            backgroundImage: "linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))",
+            backgroundSize: "200% 200%",
+            animation: "gradient-shift 3s ease infinite",
+          }}
+        >
           Analysis Results
         </h2>
         <p className="text-gray-400 text-lg">
-          Analyzed {totalCount} {isYouTube ? 'comments' : 'reviews'} {isYouTube ? 'from your video' : 'from this place'}
+          Analyzed {totalCount} comments from your video
+          {isStreaming ? " · generating insights…" : ""}
         </p>
-        {isMaps && data.place_address && (
-          <p className="text-gray-500 text-sm mt-2">
-            {data.place_address}
-          </p>
-        )}
-        {isMaps && data.place_rating && (
-          <p className="text-gray-500 text-sm mt-1">
-            Overall Rating: {data.place_rating}/5
-          </p>
-        )}
+        {title && <p className="text-gray-300 text-base mt-2 font-medium">{title}</p>}
       </div>
 
-      {/* Action Items - Top Priority */}
+      {/* Action Items */}
       <Card className="mb-12 glass border-white/10 rounded-3xl overflow-hidden animate-in-2">
         <CardHeader className="p-8 border-b border-white/5">
           <div className="flex items-center gap-4">
@@ -241,9 +176,7 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
               <CheckCircle2 className="h-7 w-7 text-blue-400" />
             </div>
             <div>
-              <CardTitle className="text-2xl font-bold mb-1">
-                Top Recommendations
-              </CardTitle>
+              <CardTitle className="text-2xl font-bold mb-1">Top Recommendations</CardTitle>
               <CardDescription className="text-gray-400">
                 Prioritized action items based on audience feedback
               </CardDescription>
@@ -263,27 +196,28 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2">
-                      <h4 className="font-semibold text-white text-lg">
-                        {item.title}
-                      </h4>
+                      <h4 className="font-semibold text-white text-lg">{item.title}</h4>
                       <Badge
                         className={`font-medium rounded-full ${
                           item.impact === "High"
                             ? "bg-red-500/20 text-red-300 border-red-400/40"
                             : item.impact === "Medium"
-                            ? "bg-yellow-500/20 text-yellow-300 border-yellow-400/40"
-                            : "bg-green-500/20 text-green-300 border-green-400/40"
+                              ? "bg-yellow-500/20 text-yellow-300 border-yellow-400/40"
+                              : "bg-green-500/20 text-green-300 border-green-400/40"
                         }`}
                       >
                         {item.impact} Impact
                       </Badge>
                     </div>
-                    <p className="text-sm text-gray-400 leading-relaxed">
-                      {item.description}
-                    </p>
+                    <p className="text-sm text-gray-400 leading-relaxed">{item.description}</p>
                   </div>
                 </div>
               ))
+            ) : isStreaming ? (
+              <div className="flex items-center gap-3 text-gray-400 py-6 justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
+                <span>Finding high-quality recommendations…</span>
+              </div>
             ) : (
               <p className="text-sm text-gray-500 text-center py-8">
                 No specific action items identified from the comments.
@@ -293,7 +227,6 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
         </CardContent>
       </Card>
 
-      {/* Two Column Layout */}
       <div className="grid md:grid-cols-2 gap-8 mb-12">
         {/* Summary */}
         <Card className="glass border-white/10 rounded-3xl overflow-hidden animate-in-3">
@@ -303,58 +236,69 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
                 <MessageSquare className="h-7 w-7 text-purple-400" />
               </div>
               <div>
-                <CardTitle className="text-2xl font-bold">
-                  Summary
-                </CardTitle>
+                <CardTitle className="text-2xl font-bold">Summary</CardTitle>
                 <CardDescription className="text-gray-400">
                   AI analysis of comments
+                  {summaryStreaming ? " · streaming…" : ""}
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="p-8">
             <div className="space-y-4">
-              {data.summary.split('\n\n').filter(p => p.trim()).map((paragraph, index) => {
-                // Check if paragraph is a heading (starts with ** and ends with **)
-                const headingMatch = paragraph.match(/^\*\*(.*?):\*\*/);
-                
-                if (headingMatch) {
-                  const headingText = headingMatch[1];
-                  const content = paragraph.replace(/^\*\*.*?:\*\*\s*/, '').trim();
-                  
+              {summaryParagraphs.length > 0 ? (
+                summaryParagraphs.map((paragraph, index) => {
+                  const headingMatch = paragraph.match(/^\*\*(.*?):\*\*/);
+
+                  if (headingMatch) {
+                    const headingText = headingMatch[1];
+                    const content = paragraph.replace(/^\*\*.*?:\*\*\s*/, "").trim();
+
+                    return (
+                      <div
+                        key={index}
+                        className="p-5 border-l-4 border-blue-400 bg-blue-500/10 rounded-r-xl"
+                      >
+                        <h4 className="font-semibold text-base mb-2 text-blue-300 flex items-center gap-2">
+                          <div className="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0"></div>
+                          {headingText}
+                        </h4>
+                        <p className="text-sm leading-relaxed text-gray-300">{content}</p>
+                      </div>
+                    );
+                  }
+
+                  const parts = paragraph.split(/(\*\*.*?\*\*)/g);
+
                   return (
-                    <div key={index} className="p-5 border-l-4 border-blue-400 bg-blue-500/10 rounded-r-xl">
-                      <h4 className="font-semibold text-base mb-2 text-blue-300 flex items-center gap-2">
-                        <div className="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0"></div>
-                        {headingText}
-                      </h4>
+                    <div
+                      key={index}
+                      className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-white/10 hover:bg-white/8 transition-all duration-300"
+                    >
                       <p className="text-sm leading-relaxed text-gray-300">
-                        {content}
+                        {parts.map((part, i) => {
+                          if (part.startsWith("**") && part.endsWith("**")) {
+                            return (
+                              <strong key={i} className="font-semibold text-white">
+                                {part.slice(2, -2)}
+                              </strong>
+                            );
+                          }
+                          return <span key={i}>{part}</span>;
+                        })}
+                        {summaryStreaming && index === summaryParagraphs.length - 1 && (
+                          <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-400 animate-pulse align-middle" />
+                        )}
                       </p>
                     </div>
                   );
-                }
-                
-                // Regular paragraph - handle bold text
-                const parts = paragraph.split(/(\*\*.*?\*\*)/g);
-                
-                return (
-                  <div key={index} className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-white/10 hover:bg-white/8 transition-all duration-300">
-                    <p className="text-sm leading-relaxed text-gray-300">
-                      {parts.map((part, i) => {
-                        if (part.startsWith('**') && part.endsWith('**')) {
-                          return (
-                            <strong key={i} className="font-semibold text-white">
-                              {part.slice(2, -2)}
-                            </strong>
-                          );
-                        }
-                        return <span key={i}>{part}</span>;
-                      })}
-                    </p>
-                  </div>
-                );
-              })}
+                })
+              ) : (
+                <div className="flex items-center gap-3 text-gray-400 py-8 justify-center">
+                  <Loader2 className="h-5 w-5 animate-spin text-purple-400" />
+                  <span>Writing summary…</span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -362,12 +306,8 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
         {/* Sentiment Breakdown */}
         <Card className="glass border-white/10 rounded-3xl overflow-hidden animate-in-4">
           <CardHeader className="p-8 border-b border-white/5">
-            <CardTitle className="text-2xl font-bold">
-              Sentiment Breakdown
-            </CardTitle>
-            <CardDescription className="text-gray-400">
-              Overall audience mood
-            </CardDescription>
+            <CardTitle className="text-2xl font-bold">Sentiment Breakdown</CardTitle>
+            <CardDescription className="text-gray-400">Overall audience mood</CardDescription>
           </CardHeader>
           <CardContent className="p-8">
             <div className="h-72">
@@ -388,34 +328,37 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
                       <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
-                  <Tooltip 
+                  <Tooltip
                     contentStyle={{
-                      backgroundColor: 'rgba(10, 15, 26, 0.95)',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      borderRadius: '12px',
-                      padding: '12px',
-                      color: '#fff',
-                      backdropFilter: 'blur(20px)'
+                      backgroundColor: "rgba(10, 15, 26, 0.95)",
+                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                      borderRadius: "12px",
+                      padding: "12px",
+                      color: "#fff",
+                      backdropFilter: "blur(20px)",
                     }}
                     formatter={(value: any, name: string) => {
-                      const total = data.sentiment.positive + data.sentiment.neutral + data.sentiment.negative;
+                      const total =
+                        data.sentiment.positive +
+                        data.sentiment.neutral +
+                        data.sentiment.negative;
                       const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
                       return [`${value} (${percentage}%)`, name];
                     }}
                     labelStyle={{
-                      color: '#fff',
-                      fontWeight: '600',
-                      marginBottom: '4px'
+                      color: "#fff",
+                      fontWeight: "600",
+                      marginBottom: "4px",
                     }}
                     itemStyle={{
-                      color: '#fff',
-                      fontWeight: '500'
+                      color: "#fff",
+                      fontWeight: "500",
                     }}
                   />
-                  <Legend 
+                  <Legend
                     wrapperStyle={{
-                      fontSize: '0.9rem',
-                      fontWeight: '500'
+                      fontSize: "0.9rem",
+                      fontWeight: "500",
                     }}
                   />
                 </PieChart>
@@ -447,180 +390,6 @@ export default function AnalysisResults({ data, onNewAnalysis }: AnalysisResults
           </CardContent>
         </Card>
       </div>
-
-      {/* Comments Browser */}
-      <Card className="glass border-white/10 rounded-3xl overflow-hidden">
-        <CardHeader className="p-8 border-b border-white/5">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-2xl font-bold mb-2">
-                {isYouTube ? 'Comment' : 'Review'} Browser
-              </CardTitle>
-              <CardDescription className="text-gray-400 text-base">
-                {filteredItems.length} of {items.length} {isYouTube ? 'comments' : 'reviews'}
-              </CardDescription>
-            </div>
-            {hasActiveFilters && (
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={clearFilters}
-                className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 rounded-xl"
-              >
-                <X className="mr-2 h-4 w-4" />
-                Clear Filters
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="p-8">
-          {/* Filters */}
-          <div className="mb-8 space-y-4">
-            <div className="flex flex-wrap gap-3 items-center">
-              <Filter className="h-5 w-5 text-gray-400" />
-              <Button
-                variant={sentimentFilter.includes("positive") ? "default" : "outline"}
-                size="sm"
-                onClick={() => toggleSentimentFilter("positive")}
-                className={`rounded-xl ${
-                  sentimentFilter.includes("positive")
-                    ? "bg-blue-500 hover:bg-blue-400 text-white"
-                    : "glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300"
-                }`}
-              >
-                <TrendingUp className="mr-1.5 h-4 w-4" />
-                Positive
-              </Button>
-              <Button
-                variant={sentimentFilter.includes("neutral") ? "default" : "outline"}
-                size="sm"
-                onClick={() => toggleSentimentFilter("neutral")}
-                className={`rounded-xl ${
-                  sentimentFilter.includes("neutral")
-                    ? "bg-purple-500 hover:bg-purple-400 text-white"
-                    : "glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300"
-                }`}
-              >
-                <Minus className="mr-1.5 h-4 w-4" />
-                Neutral
-              </Button>
-              <Button
-                variant={sentimentFilter.includes("negative") ? "default" : "outline"}
-                size="sm"
-                onClick={() => toggleSentimentFilter("negative")}
-                className={`rounded-xl ${
-                  sentimentFilter.includes("negative")
-                    ? "bg-pink-500 hover:bg-pink-400 text-white"
-                    : "glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300"
-                }`}
-              >
-                <TrendingDown className="mr-1.5 h-4 w-4" />
-                Negative
-              </Button>
-            </div>
-
-            <div className="flex gap-3">
-              <Input
-                type="text"
-                placeholder={`Search ${isYouTube ? 'comments' : 'reviews'}...`}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="flex-1 bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-xl"
-              />
-              <Input
-                type="number"
-                placeholder={isYouTube ? "Min likes" : "Min rating"}
-                value={minLikes || ""}
-                onChange={(e) => setMinLikes(Number(e.target.value) || 0)}
-                className="w-36 bg-white/5 border border-white/10 focus:border-blue-400/50 text-white placeholder:text-gray-500 rounded-xl"
-                min="0"
-              />
-            </div>
-          </div>
-
-          {/* Items List */}
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {filteredItems.length > 0 ? (
-              filteredItems.map((item, index) => (
-                <div
-                  key={index}
-                  className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-white/10 hover:bg-white/8 transition-all duration-300"
-                >
-                  <div className="flex items-start justify-between gap-4 mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center">
-                        <User className="h-4 w-4 text-blue-400" />
-                      </div>
-                      <span className="font-medium text-white">{item.author}</span>
-                      {item.sentiment && (
-                        <Badge
-                          variant="outline"
-                          className={`rounded-full font-medium ${
-                            item.sentiment === "positive"
-                              ? "border-blue-400/40 text-blue-300 bg-blue-500/10"
-                              : item.sentiment === "negative"
-                              ? "border-pink-400/40 text-pink-300 bg-pink-500/10"
-                              : "border-purple-400/40 text-purple-300 bg-purple-500/10"
-                          }`}
-                        >
-                          {item.sentiment}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-4 text-sm text-gray-400">
-                      {isYouTube ? (
-                        <div className="flex items-center gap-1.5">
-                          <ThumbsUp className="h-4 w-4" />
-                          {item.like_count || 0}
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-yellow-400">★</span>
-                          {item.rating || 0}/5
-                        </div>
-                      )}
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="h-4 w-4" />
-                        {new Date(item.published_at).toLocaleDateString()}
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-sm text-gray-300 leading-relaxed">
-                    {item.text}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-16 text-gray-500">
-                <AlertCircle className="h-14 w-14 mx-auto mb-4 opacity-40" />
-                <p className="text-lg font-medium">No {isYouTube ? 'comments' : 'reviews'} match your filters</p>
-                <p className="text-sm mt-2">Try adjusting your filters</p>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
-
-<style jsx global>{`
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 8px;
-  }
-  
-  .custom-scrollbar::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 4px;
-  }
-  
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(59, 130, 246, 0.5);
-    border-radius: 4px;
-  }
-  
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(59, 130, 246, 0.7);
-  }
-`}</style>
-

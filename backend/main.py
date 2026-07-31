@@ -15,14 +15,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-from pydantic import BaseModel
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, Field
 import stripe
 from io import BytesIO
 
 # Import from local module (same directory)
 from fetch_comments import get_youtube_service, get_video_comments, get_video_details
-from fetch_maps_reviews import get_place_reviews, extract_place_id_from_url
 from together import Together
 
 # Load environment variables
@@ -42,6 +41,11 @@ async def startup_event():
 LLM_MODEL = "google/gemma-4-31B-it"
 # Together SDK default timeout is ~60s; large comment prompts need longer
 LLM_TIMEOUT_SECS = 300.0
+# Comments sent to the LLM (top engaged + random sample)
+LLM_SAMPLE_SIZE = 200
+ACTIONS_MARKER = "---ACTIONS---"
+# Gemma-4 thinking can burn the entire max_tokens budget with zero visible content.
+INSIGHTS_MAX_TOKENS = 2000
 
 
 def get_together_client() -> Together:
@@ -50,6 +54,36 @@ def get_together_client() -> Together:
     if not api_key:
         raise ValueError("TOGETHER_API_KEY not set")
     return Together(api_key=api_key, timeout=LLM_TIMEOUT_SECS, max_retries=2)
+
+
+def _insights_completion_kwargs(**extra):
+    """Shared chat.completions kwargs for summary+actions (thinking disabled)."""
+    kwargs = {
+        "model": LLM_MODEL,
+        "max_tokens": INSIGHTS_MAX_TOKENS,
+        # Prevent Gemma-4 from consuming the token budget on hidden thought tokens.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    kwargs.update(extra)
+    return kwargs
+
+
+def _stream_delta_text(chunk) -> str:
+    """Extract visible text from a streaming chunk (skips empty-choice heartbeats)."""
+    try:
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return ""
+        delta = getattr(choices[0], "delta", None)
+        if not delta:
+            return ""
+        text = getattr(delta, "content", None) or ""
+        if text:
+            return text
+        # Some reasoning models stream the answer via reasoning_content
+        return getattr(delta, "reasoning_content", None) or ""
+    except (AttributeError, IndexError, TypeError):
+        return ""
 
 
 # Usage tracking
@@ -240,11 +274,6 @@ class AnalyzeRequest(BaseModel):
     user_email: Optional[str] = None
 
 
-class AnalyzeMapsRequest(BaseModel):
-    maps_url: str
-    user_email: Optional[str] = None
-
-
 class UsageResponse(BaseModel):
     email: str
     used: int
@@ -275,27 +304,7 @@ class AnalyzeResponse(BaseModel):
     summary: str
     sentiment: Dict[str, int]
     action_items: List[ActionItem]
-    comments: List[Comment]
-
-
-class Review(BaseModel):
-    author: str
-    text: str
-    rating: int
-    published_at: str
-    sentiment: Optional[str] = None
-
-
-class AnalyzeMapsResponse(BaseModel):
-    place_id: str
-    place_name: str
-    place_address: str
-    place_rating: float
-    total_reviews: int
-    summary: str
-    sentiment: Dict[str, int]
-    action_items: List[ActionItem]
-    reviews: List[Review]
+    comments: List[Comment] = Field(default_factory=list)
 
 
 class PDFRequest(BaseModel):
@@ -555,31 +564,6 @@ def heuristic_sentiment_youtube(comments: List[Dict], total: int) -> Dict[str, i
     return {"positive": rp, "neutral": rneu, "negative": rn}
 
 
-def heuristic_sentiment_maps(reviews: List[Dict], total: int) -> Dict[str, int]:
-    """Use star ratings when LLM JSON fails (4–5 positive, 3 neutral, 1–2 negative)."""
-    if total <= 0:
-        return {"positive": 0, "neutral": 0, "negative": 0}
-    pos, neg, neutral = 0, 0, 0
-    for r in reviews:
-        rating = int(r.get("rating") or 0)
-        if rating >= 4:
-            pos += 1
-        elif rating <= 2:
-            neg += 1
-        else:
-            neutral += 1
-    s = pos + neg + neutral
-    if s == 0:
-        return {"positive": total, "neutral": 0, "negative": 0}
-    scale = total / s
-    rp = max(0, round(pos * scale))
-    rn = max(0, round(neg * scale))
-    rneu = total - rp - rn
-    if rneu < 0:
-        rneu = 0
-    return {"positive": rp, "neutral": rneu, "negative": rn}
-
-
 def _looks_like_equal_thirds_split(c: Dict[str, int], total: int) -> bool:
     """Detect ~33/33/34 style outputs (often a bad LLM default)."""
     if total < 6:
@@ -628,18 +612,12 @@ def _action_array_from_object(obj: Dict) -> Optional[List]:
         "suggestions",
         "list",
     ):
-        v = obj.get(key)
-        if isinstance(v, list) and v:
-            return v
+        if key in obj and isinstance(obj.get(key), list):
+            return obj[key]  # empty list is a valid "0 recommendations" answer
     return None
 
 
-def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
-    arr = extract_json_array_from_llm(response_text)
-    if not arr:
-        obj = extract_json_object_from_llm(response_text)
-        if isinstance(obj, dict):
-            arr = _action_array_from_object(obj)
+def _coerce_action_items(arr: Optional[List]) -> List[ActionItem]:
     if not arr:
         return []
     out: List[ActionItem] = []
@@ -650,24 +628,191 @@ def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
             out.append(ActionItem(**_normalize_action_dict(item)))
         except Exception:
             continue
-    return out
+    return out[:3]  # Cap at 3 high-quality items
+
+
+def _try_parse_action_items(response_text: str) -> Optional[List[ActionItem]]:
+    """
+    Parse action items from model text.
+    Returns a list (possibly empty) when JSON is complete; None if not parseable yet.
+    """
+    if not response_text or not response_text.strip():
+        return None
+    arr = extract_json_array_from_llm(response_text)
+    if arr is not None:
+        return _coerce_action_items(arr)
+    obj = extract_json_object_from_llm(response_text)
+    if isinstance(obj, dict):
+        wrapped = _action_array_from_object(obj)
+        if wrapped is not None:
+            return _coerce_action_items(wrapped)
+    return None
+
+
+def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
+    parsed = _try_parse_action_items(response_text)
+    return parsed if parsed is not None else []
+
+
+def _sample_engaged(items: List[Dict], score_key: str = "like_count", n: int = LLM_SAMPLE_SIZE) -> List[Dict]:
+    """Sample top-engaged items plus a random slice for coverage."""
+    if len(items) <= n:
+        return items
+    indexed = list(enumerate(items))
+    indexed.sort(key=lambda pair: pair[1].get(score_key, 0) or 0, reverse=True)
+    top_n = min(150, n)
+    top = indexed[:top_n]
+    top_idxs = {i for i, _ in top}
+    rest = [pair for pair in indexed if pair[0] not in top_idxs]
+    random.shuffle(rest)
+    chosen = top + rest[: max(0, n - len(top))]
+    chosen.sort(key=lambda pair: pair[1].get(score_key, 0) or 0, reverse=True)
+    return [c for _, c in chosen]
+
+
+def _sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _split_insights_response(text: str) -> tuple[str, List[ActionItem]]:
+    """Split streamed/combined model output into summary + action items."""
+    if not text:
+        return "Summary could not be generated. Please try again.", []
+    marker = ACTIONS_MARKER
+    if marker in text:
+        summary_part, actions_part = text.split(marker, 1)
+        summary = summary_part.strip()
+        parsed = _try_parse_action_items(actions_part.strip())
+        items = parsed if parsed is not None else []
+    else:
+        # Fallback: try to peel a trailing JSON array off the text
+        summary = text.strip()
+        items = []
+        start = text.rfind("[")
+        end = text.rfind("]")
+        if start >= 0 and end > start:
+            maybe = text[start : end + 1]
+            parsed = _try_parse_action_items(maybe)
+            if parsed is not None:
+                items = parsed
+                summary = text[:start].strip()
+    if not summary:
+        summary = "Summary could not be generated. Please try again."
+    return summary, items
+
+
+def _build_youtube_insights_prompt(
+    comments: List[Dict], video_title: str = "", video_description: str = ""
+) -> str:
+    sampled = _sample_engaged(comments, "like_count", LLM_SAMPLE_SIZE)
+    comments_text = "\n\n".join(
+        f"Comment {i+1} (Likes: {c.get('like_count', 0)}):\n{c.get('text', '')}"
+        for i, c in enumerate(sampled)
+    )
+    video_context = ""
+    if video_title:
+        video_context += f"Video Title: {video_title}\n\n"
+    if video_description:
+        video_context += f"Video Description: {video_description[:1500]}\n\n"
+
+    return f"""Analyze these YouTube comments for the creator.
+
+Write the summary first in this exact format:
+
+**Overall Sentiment:**
+[One paragraph summarizing overall sentiment. Be specific about what commenters say.]
+
+**Feedback Summary:**
+[One paragraph on positive and negative feedback in representative proportions. If none, write "No specific feedback was provided by commenters."]
+
+Then on its own line write exactly: {ACTIONS_MARKER}
+Then a JSON array of 0-3 actionable recommendations for the creator's *next* video.
+Each item must have "title", "description", and "impact" (exactly High, Medium, or Low).
+If there is no meaningful actionable feedback, output an empty array: []
+
+Rules for recommendations:
+- Quality over quantity: only include items clearly supported by multiple comments
+- Prefer 1–2 excellent items over padding; 0 is valid when nothing is strongly supported
+- Concrete and specific, not vague advice
+- Things the creator can improve going forward (not for a video already posted)
+- Never invent recommendations to fill a quota
+
+{video_context}Comments:
+{comments_text}"""
+
+
+def get_combined_insights(prompt: str) -> tuple[str, List[ActionItem]]:
+    """Single LLM call for summary + action items (non-streaming)."""
+    client = get_together_client()
+    response = client.chat.completions.create(
+        **_insights_completion_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+        )
+    )
+    text = _extract_llm_text(response)
+    print(f"[DEBUG insights] finish={response.choices[0].finish_reason}, len={len(text)}, head={text[:200]!r}")
+    return _split_insights_response(text)
+
+
+def _iter_insights_stream(prompt: str):
+    """
+    Yield ('summary_delta', str) while streaming, then ('done', summary, items).
+    Holds back a marker-sized suffix so ---ACTIONS--- is never leaked to the client.
+    Stops once the actions JSON after ---ACTIONS--- is fully parseable (including []).
+    """
+    client = get_together_client()
+    stream = client.chat.completions.create(
+        **_insights_completion_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        )
+    )
+    buffer = ""
+    emitted = 0
+    marker_hit = False
+    hold = len(ACTIONS_MARKER)
+
+    for chunk in stream:
+        delta = _stream_delta_text(chunk)
+        if not delta:
+            continue
+        buffer += delta
+        if marker_hit:
+            # Keep reading until the actions JSON is complete (incl. empty [])
+            actions_part = buffer.split(ACTIONS_MARKER, 1)[1]
+            if _try_parse_action_items(actions_part.strip()) is not None:
+                break
+            continue
+        if ACTIONS_MARKER in buffer:
+            summary_part = buffer.split(ACTIONS_MARKER, 1)[0]
+            new = summary_part[emitted:]
+            if new:
+                yield ("summary_delta", new)
+            emitted = len(summary_part)
+            marker_hit = True
+            actions_part = buffer.split(ACTIONS_MARKER, 1)[1]
+            if _try_parse_action_items(actions_part.strip()) is not None:
+                break
+            continue
+        safe_end = max(0, len(buffer) - hold)
+        if safe_end > emitted:
+            yield ("summary_delta", buffer[emitted:safe_end])
+            emitted = safe_end
+
+    summary, items = _split_insights_response(buffer)
+    # Emit any remaining summary that was held back (no marker case)
+    if not marker_hit and len(summary) > emitted:
+        tail = summary[emitted:]
+        if tail:
+            yield ("summary_delta", tail)
+    yield ("done", summary, items)
 
 
 def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
     """Get AI summary of comments."""
     client = get_together_client()
     
-    # Smart sampling for production: prioritize most engaged comments
-    # Use top 500 comments (300 most-liked + 200 random) for cost optimization
-    if len(comments) > 500:
-        # Get top 300 by likes (these are most important)
-        top_comments = sorted(comments, key=lambda x: x['like_count'], reverse=True)[:300]
-        # Get random 200 from the rest for representative sampling
-        remaining = [c for c in comments if c not in top_comments]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_comments = top_comments + random_sample
-    else:
-        sampled_comments = comments
+    sampled_comments = _sample_engaged(comments, "like_count", LLM_SAMPLE_SIZE)
     
     comments_text = "\n\n".join([
         f"Comment {i+1} (Likes: {c['like_count']}):\n{c['text']}"
@@ -807,7 +952,8 @@ def get_action_items(comments: List[Dict], video_title: str = "", video_descript
     if video_description:
         video_context += f"Video Description: {video_description}\n\n"
     
-    prompt = f"""Based on these YouTube comments, provide 3-5 specific, actionable recommendations for the creator to improve their next video.
+    prompt = f"""Based on these YouTube comments, provide 0-3 specific, actionable recommendations for the creator to improve their next video.
+Quality over quantity: only include items clearly supported by the comments. Prefer 1–2 high-quality items over padding; return [] if nothing is strongly supported.
 
 Return ONLY a JSON array (no markdown fences, no explanation). Each item must have "title", "description", and "impact" where impact is exactly one of: High, Medium, Low.
 Example shape:
@@ -825,230 +971,21 @@ Focus on:
 - Balance positive reinforcement with areas to improve
 - Prioritize by impact (what will make the biggest difference)
 - Things the creator can improve from the next video, because its useless giving them recommendation for a video already posted
+- Never invent recommendations to fill a quota
 
 {video_context}Comments:
 {comments_text}"""
     
     response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500
+        **_insights_completion_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+        )
     )
     
     response_text = _extract_llm_text(response)
     print(f"[DEBUG yt actions] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
-    items = _parse_action_items_from_response(response_text)
-    if items:
-        return items
-    return [
-        ActionItem(
-            title="Review audience feedback in the comment browser",
-            description="Structured recommendations could not be parsed from the model response. Scroll through filtered comments below to spot recurring themes.",
-            impact="Medium",
-        )
-    ]
-
-
-def get_maps_ai_summary(reviews: List[Dict], place_name: str = "", place_address: str = "") -> str:
-    """Get AI summary of Google Maps reviews."""
-    client = get_together_client()
-    
-    # Smart sampling for production
-    if len(reviews) > 500:
-        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
-        remaining = [r for r in reviews if r not in top_reviews]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_reviews = top_reviews + random_sample
-    else:
-        sampled_reviews = reviews
-    
-    reviews_text = "\n\n".join([
-        f"Review {i+1} (Rating: {r.get('rating', 0)}/5):\n{r['text']}"
-        for i, r in enumerate(sampled_reviews)
-    ])
-    
-    # Build context about the place
-    place_context = ""
-    if place_name:
-        place_context += f"Business Name: {place_name}\n\n"
-    if place_address:
-        place_context += f"Location: {place_address}\n\n"
-    
-    prompt = f"""Analyze these Google Maps reviews and provide a representative summary for the business owner. Follow this exact format and style:
-
-**Overall Sentiment:**
-[Write one paragraph that accurately and concisely summarizes the overall sentiment of the reviews. Be specific about what customers are saying and feeling.]
-
-**Feedback Summary:**
-[Write one paragraph summarizing the feedback (both positive and negative) that customers have for the business. Capture the positives and negatives in proportions representative of the reviews. Focus on actionable insights.]
-
-Style guidelines:
-- Use clear, professional language
-- Be specific and concrete (mention what customers actually said)
-- Maintain a balanced, objective tone
-- Keep paragraphs concise but informative
-- Use present tense when describing customer sentiments
-
-{place_context}Reviews:
-{reviews_text}"""
-    
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
-    )
-    
-    msg = response.choices[0].message
-    content = msg.content or getattr(msg, "reasoning_content", None) or ""
-    print(f"[DEBUG maps summary] finish={response.choices[0].finish_reason}, content length={len(content)}, first 200 chars: {content[:200]!r}")
-    if not content.strip():
-        content = "Summary could not be generated. Please try again."
-    return content
-
-
-def get_maps_sentiment_analysis(reviews: List[Dict], place_name: str = "") -> Dict[str, int]:
-    """Get sentiment breakdown of Google Maps reviews."""
-    client = get_together_client()
-    
-    total_reviews = len(reviews)
-    
-    # Smart sampling
-    if len(reviews) > 500:
-        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
-        remaining = [r for r in reviews if r not in top_reviews]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_reviews = top_reviews + random_sample
-    else:
-        sampled_reviews = reviews
-    
-    reviews_text = "\n\n".join([
-        f"Review {i+1} (Rating: {r.get('rating', 0)}/5): {r['text']}"
-        for i, r in enumerate(sampled_reviews)
-    ])
-    
-    place_context = f"Business Name: {place_name}\n\n" if place_name else ""
-    
-    prompt = f"""Analyze the sentiment of these Google Maps reviews and categorize each as "positive", "neutral", or "negative".
-
-Return ONLY a single JSON object (no markdown fences, no explanation) with this exact shape:
-{{
-  "positive": <number>,
-  "neutral": <number>,
-  "negative": <number>
-}}
-The three numbers must sum to the number of reviews analyzed and represent counts of each sentiment.
-
-{place_context}Reviews:
-{reviews_text}"""
-    
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
-    )
-    
-    response_text = _extract_llm_text(response)
-    print(f"[DEBUG maps sentiment] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
-    obj = extract_json_object_from_llm(response_text)
-    if obj:
-        parsed = _parse_sentiment_counts_from_dict(obj, total_reviews)
-        if parsed is not None:
-            h = heuristic_sentiment_maps(reviews, total_reviews)
-            if _looks_like_equal_thirds_split(parsed, total_reviews) and not _looks_like_equal_thirds_split(
-                h, total_reviews
-            ):
-                return h
-            return parsed
-    return heuristic_sentiment_maps(reviews, total_reviews)
-
-
-def get_maps_action_items(reviews: List[Dict], place_name: str = "") -> List[ActionItem]:
-    """Get actionable recommendations from Google Maps reviews."""
-    client = get_together_client()
-    
-    # Smart sampling
-    if len(reviews) > 500:
-        top_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)[:300]
-        remaining = [r for r in reviews if r not in top_reviews]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_reviews = top_reviews + random_sample
-    else:
-        sampled_reviews = reviews
-    
-    reviews_text = "\n\n".join([
-        f"Review {i+1} (Rating: {r.get('rating', 0)}/5):\n{r['text']}"
-        for i, r in enumerate(sampled_reviews)
-    ])
-    
-    place_context = f"Business Name: {place_name}\n\n" if place_name else ""
-    
-    prompt = f"""Based on these Google Maps reviews, provide 3-5 specific, actionable recommendations for the business owner to improve their business.
-
-Return ONLY a JSON array (no markdown fences, no explanation). Each item must have "title", "description", and "impact" where impact is exactly one of: High, Medium, Low.
-
-Focus on:
-- Concrete, specific actions (not vague advice)
-- Things mentioned by multiple customers
-- Balance positive reinforcement with areas to improve
-- Prioritize by impact (what will make the biggest difference)
-- Actionable improvements the business can make going forward
-
-{place_context}Reviews:
-{reviews_text}"""
-    
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500
-    )
-    
-    response_text = _extract_llm_text(response)
-    print(f"[DEBUG maps actions] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
-    items = _parse_action_items_from_response(response_text)
-    if items:
-        return items
-    return [
-        ActionItem(
-            title="Review customer feedback in the review browser",
-            description="Structured recommendations could not be parsed from the model response. Use the reviews below to identify recurring themes.",
-            impact="Medium",
-        )
-    ]
-
-
-def assign_sentiments_to_reviews(reviews: List[Dict], sentiment_counts: Dict[str, int]) -> List[Review]:
-    """Assign sentiment labels to individual reviews based on overall distribution."""
-    total = len(reviews)
-    if total == 0:
-        return []
-    
-    positive_count = sentiment_counts.get('positive', 0)
-    neutral_count = sentiment_counts.get('neutral', 0)
-    negative_count = sentiment_counts.get('negative', 0)
-    
-    # Sort reviews by rating (highest first)
-    sorted_reviews = sorted(reviews, key=lambda x: x.get('rating', 0), reverse=True)
-    
-    result = []
-    for i, review in enumerate(sorted_reviews):
-        ratio = i / max(total, 1)
-        
-        if ratio < positive_count / max(total, 1):
-            sentiment = "positive"
-        elif ratio < (positive_count + neutral_count) / max(total, 1):
-            sentiment = "neutral"
-        else:
-            sentiment = "negative"
-        
-        result.append(Review(
-            author=review['author'],
-            text=review['text'],
-            rating=review.get('rating', 0),
-            published_at=review['published_at'],
-            sentiment=sentiment
-        ))
-    
-    return result
+    return _parse_action_items_from_response(response_text)
 
 
 def assign_sentiments_to_comments(comments: List[Dict], sentiment_counts: Dict[str, int]) -> List[Comment]:
@@ -1460,25 +1397,19 @@ async def analyze_video(request: AnalyzeRequest):
         video_id = extract_video_id(request.video_url)
         
         # Fetch video details and comments - production limit for quota management
-        # 1000 comments gives good coverage while managing API costs
         youtube = get_youtube_service()
         video_details = get_video_details(youtube, video_id)
         video_title = video_details.get('title', '')
         video_description = video_details.get('description', '')
-        comments = get_video_comments(youtube, video_id, max_results=1000, verbose=False)
+        comments = get_video_comments(youtube, video_id, max_results=200, verbose=False)
         
         if not comments:
             raise HTTPException(status_code=404, detail="No comments found for this video")
         
-        # Run AI analysis in parallel
-        summary, sentiment, action_items = await asyncio.gather(
-            asyncio.to_thread(get_ai_summary, comments, video_title, video_description),
-            asyncio.to_thread(get_sentiment_analysis, comments, video_title, video_description),
-            asyncio.to_thread(get_action_items, comments, video_title, video_description),
-        )
-        
-        # Assign sentiments to comments
-        comments_with_sentiment = assign_sentiments_to_comments(comments, sentiment)
+        # Fast heuristic pie chart + one LLM call for summary & actions
+        sentiment = heuristic_sentiment_youtube(comments, len(comments))
+        prompt = _build_youtube_insights_prompt(comments, video_title, video_description)
+        summary, action_items = await asyncio.to_thread(get_combined_insights, prompt)
         
         # Increment usage count after successful analysis
         if request.user_email:
@@ -1493,7 +1424,7 @@ async def analyze_video(request: AnalyzeRequest):
             summary=summary,
             sentiment=sentiment,
             action_items=action_items,
-            comments=comments_with_sentiment
+            comments=[],
         )
     
     except ValueError as e:
@@ -1512,77 +1443,108 @@ async def analyze_video(request: AnalyzeRequest):
         )
 
 
-@app.post("/analyze-maps", response_model=AnalyzeMapsResponse)
-async def analyze_maps_place(request: AnalyzeMapsRequest):
-    """Analyze a Google Maps place's reviews."""
+@app.post("/analyze/stream")
+async def analyze_video_stream(request: AnalyzeRequest):
+    """Stream YouTube analysis via SSE: meta → sentiment → summary deltas → action_items → done."""
+    if not request.user_email:
+        raise HTTPException(status_code=401, detail="Please sign in to analyze videos")
+
+    can_analyze, _remaining = check_usage_limit(request.user_email)
+    if not can_analyze:
+        tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+        user_limit = TIER_LIMITS[tier]
+        raise HTTPException(
+            status_code=429,
+            detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!",
+        )
+
     try:
-        # Check usage limits
-        if not request.user_email:
-            raise HTTPException(
-                status_code=401, 
-                detail="Please sign in to analyze places"
-            )
-        
-        can_analyze, remaining = check_usage_limit(request.user_email)
-        if not can_analyze:
-            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-            user_limit = TIER_LIMITS[tier]
-            raise HTTPException(
-                status_code=429, 
-                detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!"
-            )
-        
-        # Extract place ID from URL
-        place_id = extract_place_id_from_url(request.maps_url)
-        
-        # Fetch place reviews
-        reviews, place_info = get_place_reviews(place_id, max_results=1000)
-        
-        if not reviews:
-            raise HTTPException(status_code=404, detail="No reviews found for this place")
-        
-        # Run AI analysis in parallel
-        summary, sentiment, action_items = await asyncio.gather(
-            asyncio.to_thread(get_maps_ai_summary, reviews, place_info['name'], place_info['address']),
-            asyncio.to_thread(get_maps_sentiment_analysis, reviews, place_info['name']),
-            asyncio.to_thread(get_maps_action_items, reviews, place_info['name']),
-        )
-        
-        # Assign sentiments to reviews
-        reviews_with_sentiment = assign_sentiments_to_reviews(reviews, sentiment)
-        
-        # Increment usage count after successful analysis
-        if request.user_email:
-            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-            if TIER_LIMITS[tier] != -1:  # Only increment if not unlimited
-                increment_user_usage(request.user_email)
-        
-        return AnalyzeMapsResponse(
-            place_id=place_id,
-            place_name=place_info['name'],
-            place_address=place_info['address'],
-            place_rating=place_info['rating'],
-            total_reviews=len(reviews),
-            summary=summary,
-            sentiment=sentiment,
-            action_items=action_items,
-            reviews=reviews_with_sentiment
-        )
-    
+        video_id = extract_video_id(request.video_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        # Log the full error for debugging
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"Error analyzing Google Maps place: {error_trace}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"An error occurred: {str(e)}. Please check your API keys and try again."
-        )
+
+    async def event_gen():
+        try:
+            youtube = get_youtube_service()
+            video_details = await asyncio.to_thread(get_video_details, youtube, video_id)
+            video_title = video_details.get("title", "")
+            video_description = video_details.get("description", "")
+            comments = await asyncio.to_thread(
+                get_video_comments, youtube, video_id, 200, False
+            )
+            if not comments:
+                yield _sse("error", {"detail": "No comments found for this video"})
+                return
+
+            sentiment = heuristic_sentiment_youtube(comments, len(comments))
+            # Emit meta+sentiment together so the pie chart paints immediately.
+            # sleep(0) + SSE padding force the ASGI server to flush early chunks.
+            yield _sse(
+                "meta",
+                {
+                    "video_id": video_id,
+                    "video_title": video_title,
+                    "total_comments": len(comments),
+                    "sentiment": sentiment,
+                },
+            )
+            await asyncio.sleep(0)
+            yield _sse("sentiment", sentiment)
+            await asyncio.sleep(0)
+            yield f":{ ' ' * 2048}\n\n"
+            await asyncio.sleep(0)
+
+            prompt = _build_youtube_insights_prompt(comments, video_title, video_description)
+            queue: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def run_stream():
+                try:
+                    for item in _iter_insights_stream(prompt):
+                        loop.call_soon_threadsafe(queue.put_nowait, item)
+                except Exception as exc:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            loop.run_in_executor(None, run_stream)
+
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                kind = item[0]
+                if kind == "summary_delta":
+                    yield _sse("summary_delta", {"text": item[1]})
+                elif kind == "done":
+                    _summary, action_items = item[1], item[2]
+                    yield _sse("summary", {"text": _summary})
+                    yield _sse(
+                        "action_items",
+                        [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in action_items],
+                    )
+                elif kind == "error":
+                    yield _sse("error", {"detail": item[1]})
+                    return
+
+            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
+            if TIER_LIMITS[tier] != -1:
+                increment_user_usage(request.user_email)
+            yield _sse("done", {"ok": True})
+        except Exception as e:
+            import traceback
+            print(f"Error streaming video analysis: {traceback.format_exc()}")
+            yield _sse("error", {"detail": str(e)})
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/analyze/pdf")
