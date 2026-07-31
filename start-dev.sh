@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🚀 Starting Distill development servers..."
+echo "🚀 Starting Disstill development servers..."
 echo ""
 
 # Check if .env file exists

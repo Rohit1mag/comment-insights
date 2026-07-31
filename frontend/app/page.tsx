@@ -312,7 +312,7 @@ export default function Home() {
                   backgroundSize: '200% 200%',
                   animation: 'gradient-shift 3s ease infinite'
                 }}>
-                  Distill
+                  Disstill
                 </span>
               </h1>
               <Badge variant="secondary" className="hidden sm:inline-flex bg-blue-500/10 text-blue-300 border-blue-400/30 rounded-full px-3 text-xs font-medium">

@@ -6,7 +6,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Distill — Turn YouTube Comments into Actionable Feedback",
+  title: "Disstill — Turn YouTube Comments into Actionable Feedback",
   description: "AI-powered analysis that transforms YouTube comments into clear, actionable insights.",
 };
 
