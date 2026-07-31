@@ -32,7 +32,11 @@ try:
 except ImportError:
     pass
 
-app = FastAPI(title="Disstill API")
+# Vercel forwards the full public path (/api/python/...) to this service, while
+# local dev strips it in the Next rewrite. root_path makes both match the routes below.
+ROOT_PATH = "/api/python" if os.getenv("VERCEL") else ""
+
+app = FastAPI(title="Disstill API", root_path=ROOT_PATH)
 
 
 @app.on_event("startup")
@@ -319,7 +323,12 @@ def _cookie_secure() -> bool:
     explicit = os.getenv("COOKIE_SECURE")
     if explicit is not None:
         return explicit.strip().lower() in ("1", "true", "yes")
-    env = (os.getenv("ENVIRONMENT") or os.getenv("NODE_ENV") or "").lower()
+    env = (
+        os.getenv("ENVIRONMENT")
+        or os.getenv("VERCEL_ENV")
+        or os.getenv("NODE_ENV")
+        or ""
+    ).lower()
     return env in ("production", "prod")
 
 

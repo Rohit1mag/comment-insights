@@ -112,7 +112,7 @@ function GuestSignupCta({ message }: { message?: string }) {
 }
 
 export default function Home() {
-  const { user, isSignedIn } = useUser();
+  const { user, isSignedIn, isLoaded: authLoaded } = useUser();
   const [videoUrl, setVideoUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
@@ -130,6 +130,10 @@ export default function Home() {
 
   // Fetch usage (signed-in account or guest trial) + merge guest on sign-in
   useEffect(() => {
+    // Before Clerk resolves, isSignedIn is undefined — fetching here would burn a
+    // guest trial request and then immediately refetch as the signed-in user.
+    if (!authLoaded) return;
+
     let cancelled = false;
 
     const fetchUsage = async () => {
@@ -182,7 +186,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [isSignedIn, userEmail]);
+  }, [authLoaded, isSignedIn, userEmail]);
 
   const handleAnalyze = async () => {
     if (!videoUrl) {
@@ -388,6 +392,12 @@ export default function Home() {
               </Badge>
             </div>
             <div className="flex items-center gap-3">
+              {!authLoaded && (
+                <div className="flex items-center gap-3" aria-hidden>
+                  <div className="h-10 w-20 rounded-xl border border-white/10 animate-pulse" />
+                  <div className="h-10 w-28 rounded-xl bg-white/5 animate-pulse" />
+                </div>
+              )}
               <SignedOut>
                 {usage ? (
                   <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-400/30">

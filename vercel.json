@@ -14,19 +14,7 @@
           "maxDuration": 300,
           "memory": 1024
         }
-      },
-      "routes": [
-        {
-          "src": "/api/python/(.*)",
-          "transforms": [
-            {
-              "type": "request.path",
-              "op": "set",
-              "args": "/$1"
-            }
-          ]
-        }
-      ]
+      }
     }
   },
   "rewrites": [
