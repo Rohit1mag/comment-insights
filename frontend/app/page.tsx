@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import {
   useUser,
 } from "@clerk/nextjs";
 import AnalysisResults from "@/components/AnalysisResults";
+import { getApiUrl } from "@/lib/api";
 
 interface UsageData {
   used: number;
@@ -22,6 +23,7 @@ interface UsageData {
   limit: number;
   is_unlimited: boolean;
   tier: string;
+  guest?: boolean;
 }
 
 interface AnalysisData {
@@ -86,6 +88,29 @@ async function consumeSse(
   }
 }
 
+function GuestSignupCta({ message }: { message?: string }) {
+  return (
+    <div className="border border-amber-400/30 bg-amber-500/10 p-5 mb-6 max-w-2xl mx-auto rounded-2xl backdrop-blur-xl text-left">
+      <p className="text-sm text-amber-100 font-medium mb-3">
+        {message ||
+          "You've used your free guest analysis. Sign up to get 5 analyses per month."}
+      </p>
+      <div className="flex flex-wrap gap-3">
+        <SignInButton mode="modal">
+          <button className="px-5 py-2.5 text-sm font-semibold text-gray-200 hover:text-white transition-all cursor-pointer rounded-xl border border-white/15 hover:border-white/25 hover:bg-white/5">
+            Sign in
+          </button>
+        </SignInButton>
+        <SignUpButton mode="modal">
+          <button className="px-6 py-2.5 text-sm font-semibold bg-gradient-to-r from-blue-500 to-purple-500 text-white hover:from-blue-400 hover:to-purple-400 transition-all cursor-pointer rounded-xl shadow-lg shadow-blue-500/25">
+            Sign up free
+          </button>
+        </SignUpButton>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const { user, isSignedIn } = useUser();
   const [videoUrl, setVideoUrl] = useState("");
@@ -94,37 +119,59 @@ export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [summaryStreaming, setSummaryStreaming] = useState(false);
   const [error, setError] = useState("");
+  const [showGuestSignupCta, setShowGuestSignupCta] = useState(false);
   const [loadingStep, setLoadingStep] = useState("");
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [creditUsedNotification, setCreditUsedNotification] = useState(false);
+  const claimedGuestRef = useRef<string | null>(null);
 
   // Get the user's primary email
   const userEmail = user?.primaryEmailAddress?.emailAddress;
 
-  // Fetch usage data when user signs in
+  // Fetch usage (signed-in account or guest trial) + merge guest on sign-in
   useEffect(() => {
-    const fetchUsage = async () => {
-      if (!userEmail) {
-        setUsage(null);
-        return;
-      }
+    let cancelled = false;
 
-      console.log("Fetching usage for:", userEmail);
+    const fetchUsage = async () => {
+      const apiUrl = getApiUrl();
 
       try {
-        const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-        const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const apiUrl = envApiUrl || (isDev ? 'http://localhost:8000' : '/api/python');
-        
-        console.log("API URL:", `${apiUrl}/usage/${encodeURIComponent(userEmail)}`);
-        
-        const response = await fetch(`${apiUrl}/usage/${encodeURIComponent(userEmail)}`);
-        if (response.ok) {
-          const data = await response.json();
-          console.log("Usage data received:", data);
-          setUsage(data);
-        } else {
-          console.error("Failed to fetch usage, status:", response.status);
+        if (isSignedIn && userEmail) {
+          // Merge guest trial into account once per session/email
+          if (claimedGuestRef.current !== userEmail) {
+            claimedGuestRef.current = userEmail;
+            try {
+              await fetch(`${apiUrl}/guest/claim`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ email: userEmail }),
+              });
+            } catch (err) {
+              console.error("Failed to claim guest usage:", err);
+            }
+          }
+
+          const response = await fetch(
+            `${apiUrl}/usage/${encodeURIComponent(userEmail)}`,
+            { credentials: "include" }
+          );
+          if (!cancelled && response.ok) {
+            const data = await response.json();
+            setUsage(data);
+          }
+        } else if (!isSignedIn) {
+          claimedGuestRef.current = null;
+          const response = await fetch(`${apiUrl}/guest/usage`, {
+            credentials: "include",
+          });
+          if (!cancelled && response.ok) {
+            const data = await response.json();
+            setUsage(data);
+            if (data.remaining <= 0) {
+              setShowGuestSignupCta(true);
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to fetch usage:", err);
@@ -132,7 +179,10 @@ export default function Home() {
     };
 
     fetchUsage();
-  }, [userEmail]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, userEmail]);
 
   const handleAnalyze = async () => {
     if (!videoUrl) {
@@ -140,12 +190,13 @@ export default function Home() {
       return;
     }
 
-    if (!isSignedIn || !userEmail) {
-      setError("Please sign in to analyze");
+    if (!isSignedIn && usage && usage.remaining <= 0) {
+      setError("You've used your free guest analysis. Sign up to continue.");
+      setShowGuestSignupCta(true);
       return;
     }
 
-    if (usage && !usage.is_unlimited && usage.remaining <= 0) {
+    if (isSignedIn && usage && !usage.is_unlimited && usage.remaining <= 0) {
       setError(
         `You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month!`
       );
@@ -153,16 +204,14 @@ export default function Home() {
     }
 
     setError("");
+    setShowGuestSignupCta(false);
     setLoading(true);
     setAnalysisData(null);
     setIsStreaming(false);
     setSummaryStreaming(false);
 
     try {
-      const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-      const isDev =
-        window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-      const apiUrl = envApiUrl || (isDev ? "http://localhost:8000" : "/api/python");
+      const apiUrl = getApiUrl();
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 300000);
@@ -174,7 +223,11 @@ export default function Home() {
         response = await fetch(`${apiUrl}/analyze/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ video_url: videoUrl, user_email: userEmail }),
+          credentials: "include",
+          body: JSON.stringify({
+            video_url: videoUrl,
+            user_email: isSignedIn ? userEmail : null,
+          }),
           signal: controller.signal,
         });
       } finally {
@@ -189,6 +242,12 @@ export default function Home() {
           errorMessage = errorData.detail || errorData.message || errorMessage;
         } catch {
           errorMessage = errorText || errorMessage;
+        }
+        if (
+          response.status === 401 ||
+          /sign up|sign in|guest/i.test(errorMessage)
+        ) {
+          setShowGuestSignupCta(true);
         }
         throw new Error(errorMessage);
       }
@@ -264,11 +323,15 @@ export default function Home() {
           setLoadingStep("");
           if (!credited && usage && !usage.is_unlimited) {
             credited = true;
+            const nextRemaining = Math.max(0, usage.remaining - 1);
             setUsage({
               ...usage,
               used: usage.used + 1,
-              remaining: usage.remaining - 1,
+              remaining: nextRemaining,
             });
+            if (!isSignedIn && nextRemaining <= 0) {
+              setShowGuestSignupCta(true);
+            }
             setCreditUsedNotification(true);
             setTimeout(() => setCreditUsedNotification(false), 5000);
           }
@@ -279,6 +342,9 @@ export default function Home() {
       });
 
       if (streamError) {
+        if (/sign up|sign in|guest/i.test(streamError)) {
+          setShowGuestSignupCta(true);
+        }
         throw new Error(streamError);
       }
     } catch (err: any) {
@@ -294,6 +360,8 @@ export default function Home() {
       setLoadingStep("");
     }
   };
+
+  const isGuest = !isSignedIn;
 
   return (
     <div className="min-h-screen relative z-10">
@@ -321,6 +389,21 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <SignedOut>
+                {usage ? (
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-400/30">
+                    <Sparkles className="h-4 w-4 text-blue-400" />
+                    <span className="text-blue-300">
+                      {usage.remaining > 0 ? (
+                        <>
+                          <span className="font-bold">1</span>
+                          <span className="text-gray-500 ml-1">free analysis</span>
+                        </>
+                      ) : (
+                        <span className="text-amber-200">0 free remaining — sign up</span>
+                      )}
+                    </span>
+                  </div>
+                ) : null}
                 <SignInButton>
                   <button className="px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5">
                     Sign in
@@ -442,6 +525,16 @@ export default function Home() {
                 </div>
               )}
 
+              {showGuestSignupCta && !isSignedIn && (
+                <GuestSignupCta
+                  message={
+                    usage && usage.remaining <= 0
+                      ? "You've used your free guest analysis. Sign up to get 5 analyses per month."
+                      : undefined
+                  }
+                />
+              )}
+
               {loading && (
                 <div className="border border-blue-400/30 bg-blue-500/10 p-4 mb-6 max-w-2xl mx-auto rounded-2xl backdrop-blur-xl">
                   <div className="text-sm text-blue-300 flex items-center gap-3 font-medium">
@@ -452,9 +545,11 @@ export default function Home() {
               )}
 
               <p className="text-sm text-gray-500">
-                {isSignedIn 
+                {isSignedIn
                   ? "Analysis typically takes 15-30 seconds • Works with any public YouTube video"
-                  : "Sign in to get started • Free users get 5 analyses"}
+                  : usage && usage.remaining <= 0
+                  ? "Free guest analysis used — sign up for 5 analyses/month"
+                  : "Try 1 free analysis — no account needed • Sign up for 5/month"}
               </p>
             </div>
 
@@ -562,16 +657,23 @@ export default function Home() {
 
           </>
         ) : (
-          <AnalysisResults
-            data={analysisData}
-            isStreaming={isStreaming}
-            summaryStreaming={summaryStreaming}
-            onNewAnalysis={() => {
-              setAnalysisData(null);
-              setIsStreaming(false);
-              setSummaryStreaming(false);
-            }}
-          />
+          <>
+            {showGuestSignupCta && isGuest && !isStreaming && (
+              <div className="max-w-4xl mx-auto mb-6">
+                <GuestSignupCta message="Enjoying the insights? Sign up to keep analyzing — free accounts get 5 analyses/month." />
+              </div>
+            )}
+            <AnalysisResults
+              data={analysisData}
+              isStreaming={isStreaming}
+              summaryStreaming={summaryStreaming}
+              onNewAnalysis={() => {
+                setAnalysisData(null);
+                setIsStreaming(false);
+                setSummaryStreaming(false);
+              }}
+            />
+          </>
         )}
       </main>
 
@@ -584,10 +686,14 @@ export default function Home() {
             </div>
             <div>
               <p className="text-sm font-semibold text-blue-300">
-                1 credit used
+                {isGuest ? "Free analysis used" : "1 credit used"}
               </p>
               <p className="text-xs text-gray-400">
-                {usage.remaining} analysis credit{usage.remaining !== 1 ? 's' : ''} remaining
+                {isGuest
+                  ? usage.remaining > 0
+                    ? `${usage.remaining} free analysis remaining`
+                    : "Sign up for more analyses"
+                  : `${usage.remaining} analysis credit${usage.remaining !== 1 ? "s" : ""} remaining`}
               </p>
             </div>
           </div>

@@ -7,15 +7,16 @@ import os
 import re
 import json
 import random
+import secrets
 import asyncio
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 import stripe
 from io import BytesIO
@@ -89,6 +90,13 @@ def _stream_delta_text(chunk) -> str:
 # Usage tracking
 USAGE_FILE = Path(__file__).parent / "usage_data.json"
 SUBSCRIPTIONS_FILE = Path(__file__).parent / "subscriptions_data.json"
+GUEST_USAGE_FILE = Path(__file__).parent / "guest_usage.json"
+
+# Guest trial: 1 free analysis per guest cookie; IP soft-cap for spray abuse
+GUEST_COOKIE_NAME = "disstill_guest_id"
+GUEST_ANALYSIS_LIMIT = 1
+GUEST_IP_LIMIT_24H = 3
+GUEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year
 
 # Stripe configuration
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -259,10 +267,286 @@ def check_usage_limit(email: Optional[str]) -> tuple[bool, int]:
     remaining = max(0, user_limit - current_usage)
     return remaining > 0, remaining
 
-# CORS middleware
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat()
+
+
+def load_guest_usage_data() -> Dict:
+    """Load guest trial + IP rate-limit data."""
+    if GUEST_USAGE_FILE.exists():
+        try:
+            with open(GUEST_USAGE_FILE, "r") as f:
+                data = json.load(f)
+                if not isinstance(data, dict):
+                    return {"guests": {}, "ips": {}}
+                data.setdefault("guests", {})
+                data.setdefault("ips", {})
+                return data
+        except (json.JSONDecodeError, IOError):
+            return {"guests": {}, "ips": {}}
+    return {"guests": {}, "ips": {}}
+
+
+def save_guest_usage_data(data: Dict) -> None:
+    """Persist guest trial data."""
+    with open(GUEST_USAGE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_client_ip(request: Request) -> str:
+    """Best-effort client IP behind Vercel/Render proxies."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        # First hop is the original client
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _cookie_secure() -> bool:
+    """Secure cookies in production (HTTPS). Override with COOKIE_SECURE=true/false."""
+    explicit = os.getenv("COOKIE_SECURE")
+    if explicit is not None:
+        return explicit.strip().lower() in ("1", "true", "yes")
+    env = (os.getenv("ENVIRONMENT") or os.getenv("NODE_ENV") or "").lower()
+    return env in ("production", "prod")
+
+
+def set_guest_cookie(response: Response, guest_id: str) -> None:
+    response.set_cookie(
+        key=GUEST_COOKIE_NAME,
+        value=guest_id,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        max_age=GUEST_COOKIE_MAX_AGE,
+        path="/",
+    )
+
+
+def clear_guest_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=GUEST_COOKIE_NAME,
+        path="/",
+        samesite="lax",
+        secure=_cookie_secure(),
+    )
+
+
+def get_or_create_guest_id(request: Request) -> Tuple[str, bool]:
+    """Return (guest_id, created_new)."""
+    existing = request.cookies.get(GUEST_COOKIE_NAME)
+    if existing and len(existing) >= 16:
+        return existing, False
+    return secrets.token_urlsafe(32), True
+
+
+def get_guest_record(guest_id: str) -> Dict:
+    data = load_guest_usage_data()
+    return data.get("guests", {}).get(guest_id, {})
+
+
+def guest_remaining(guest_id: str) -> int:
+    record = get_guest_record(guest_id)
+    if record.get("claimed_by"):
+        return 0
+    used = int(record.get("used", 0) or 0)
+    return max(0, GUEST_ANALYSIS_LIMIT - used)
+
+
+def _prune_ip_timestamps(timestamps: List[str], window: timedelta) -> List[str]:
+    cutoff = _utc_now() - window
+    kept: List[str] = []
+    for ts in timestamps:
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt >= cutoff:
+                kept.append(ts)
+        except (TypeError, ValueError):
+            continue
+    return kept
+
+
+def check_guest_ip_limit(ip: str) -> Tuple[bool, int]:
+    """Returns (allowed, remaining_ip_slots) for guest analyses in last 24h."""
+    data = load_guest_usage_data()
+    timestamps = _prune_ip_timestamps(
+        list(data.get("ips", {}).get(ip, [])),
+        timedelta(hours=24),
+    )
+    remaining = max(0, GUEST_IP_LIMIT_24H - len(timestamps))
+    return remaining > 0, remaining
+
+
+def record_guest_analysis(guest_id: str, ip: str) -> None:
+    """Mark guest trial used and record IP timestamp (after successful analysis)."""
+    data = load_guest_usage_data()
+    guests = data.setdefault("guests", {})
+    ips = data.setdefault("ips", {})
+
+    record = guests.get(guest_id, {})
+    record["used"] = int(record.get("used", 0) or 0) + 1
+    record["last_used_at"] = _utc_now_iso()
+    if "created_at" not in record:
+        record["created_at"] = _utc_now_iso()
+    guests[guest_id] = record
+
+    pruned = _prune_ip_timestamps(list(ips.get(ip, [])), timedelta(hours=24))
+    pruned.append(_utc_now_iso())
+    ips[ip] = pruned
+
+    save_guest_usage_data(data)
+
+
+def ensure_guest_registered(guest_id: str) -> None:
+    """Ensure guest id exists in storage (used=0) so cookie mapping is durable."""
+    data = load_guest_usage_data()
+    guests = data.setdefault("guests", {})
+    if guest_id not in guests:
+        guests[guest_id] = {
+            "used": 0,
+            "created_at": _utc_now_iso(),
+        }
+        save_guest_usage_data(data)
+
+
+def claim_guest_for_email(guest_id: str, email: str) -> Dict:
+    """
+    Merge guest trial into account usage once.
+    If guest already used their free analysis, increment account monthly usage by 1.
+    Invalidates guest for further anonymous use.
+    """
+    data = load_guest_usage_data()
+    guests = data.setdefault("guests", {})
+    record = guests.get(guest_id)
+    if not record:
+        return {"merged": False, "reason": "no_guest", "usage_incremented": False}
+
+    if record.get("claimed_by"):
+        return {
+            "merged": False,
+            "reason": "already_claimed",
+            "usage_incremented": False,
+            "claimed_by": record.get("claimed_by"),
+        }
+
+    used = int(record.get("used", 0) or 0)
+    usage_incremented = False
+    if used >= 1:
+        increment_user_usage(email)
+        usage_incremented = True
+
+    # Burn remaining trial even if unused, so cookie can't be reused anonymously after sign-in
+    record["used"] = max(used, GUEST_ANALYSIS_LIMIT)
+    record["claimed_by"] = email
+    record["claimed_at"] = _utc_now_iso()
+    guests[guest_id] = record
+    save_guest_usage_data(data)
+
+    return {
+        "merged": True,
+        "reason": "ok",
+        "usage_incremented": usage_incremented,
+        "guest_used": used,
+    }
+
+
+def authorize_analysis(request: Request, user_email: Optional[str]) -> Dict:
+    """
+    Server-side gate for analyze. Signed-in users use email limits;
+    anonymous users use guest cookie + IP rate limit.
+    """
+    if user_email:
+        # Best-effort merge if a used guest cookie is still present
+        guest_id = request.cookies.get(GUEST_COOKIE_NAME)
+        if guest_id:
+            claim_guest_for_email(guest_id, user_email)
+
+        can_analyze, remaining = check_usage_limit(user_email)
+        if not can_analyze:
+            tier = USER_TIERS.get(user_email, DEFAULT_TIER)
+            user_limit = TIER_LIMITS[tier]
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"You've reached your {tier} tier limit of {user_limit} analyses. "
+                    "Upgrade to Pro for 15 analyses/month!"
+                ),
+            )
+        return {
+            "mode": "user",
+            "email": user_email,
+            "guest_id": guest_id,
+            "remaining": remaining,
+        }
+
+    guest_id, _created = get_or_create_guest_id(request)
+    ensure_guest_registered(guest_id)
+    remaining = guest_remaining(guest_id)
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "You've used your free guest analysis. "
+                "Sign up or sign in to continue analyzing."
+            ),
+        )
+
+    ip = get_client_ip(request)
+    ip_ok, ip_remaining = check_guest_ip_limit(ip)
+    if not ip_ok:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many free analyses from this network. "
+                "Please sign up or try again tomorrow."
+            ),
+        )
+
+    return {
+        "mode": "guest",
+        "email": None,
+        "guest_id": guest_id,
+        "ip": ip,
+        "remaining": remaining,
+        "ip_remaining": ip_remaining,
+    }
+
+
+def record_analysis_usage(auth: Dict) -> None:
+    """Increment the correct usage counter after a successful analysis."""
+    if auth["mode"] == "user":
+        email = auth["email"]
+        tier = USER_TIERS.get(email, DEFAULT_TIER)
+        if TIER_LIMITS[tier] != -1:
+            increment_user_usage(email)
+    elif auth["mode"] == "guest":
+        record_guest_analysis(auth["guest_id"], auth["ip"])
+
+
+# CORS: credentials require explicit origins (not *). Prefer same-origin /api/python rewrite.
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -274,6 +558,10 @@ class AnalyzeRequest(BaseModel):
     user_email: Optional[str] = None
 
 
+class ClaimGuestRequest(BaseModel):
+    email: str
+
+
 class UsageResponse(BaseModel):
     email: str
     used: int
@@ -281,6 +569,15 @@ class UsageResponse(BaseModel):
     limit: int
     is_unlimited: bool
     tier: str
+
+
+class GuestUsageResponse(BaseModel):
+    guest: bool = True
+    used: int
+    remaining: int
+    limit: int
+    is_unlimited: bool = False
+    tier: str = "GUEST"
 
 
 class Comment(BaseModel):
@@ -1226,6 +1523,47 @@ async def get_usage(email: str) -> UsageResponse:
     )
 
 
+@app.get("/guest/usage")
+async def get_guest_usage(request: Request):
+    """Get guest trial status; sets guest cookie if missing."""
+    guest_id, _created = get_or_create_guest_id(request)
+    ensure_guest_registered(guest_id)
+    record = get_guest_record(guest_id)
+    used = min(GUEST_ANALYSIS_LIMIT, int(record.get("used", 0) or 0))
+    if record.get("claimed_by"):
+        used = GUEST_ANALYSIS_LIMIT
+    remaining = max(0, GUEST_ANALYSIS_LIMIT - used)
+    payload = GuestUsageResponse(
+        used=used,
+        remaining=remaining,
+        limit=GUEST_ANALYSIS_LIMIT,
+    )
+    response = JSONResponse(content=payload.model_dump())
+    set_guest_cookie(response, guest_id)
+    return response
+
+
+@app.post("/guest/claim")
+async def claim_guest_usage(request: Request, body: ClaimGuestRequest):
+    """
+    On Clerk sign-in/sign-up: merge guest trial into account usage once.
+    If the guest already used their free analysis, account monthly usage += 1.
+    """
+    email = (body.email or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+
+    guest_id = request.cookies.get(GUEST_COOKIE_NAME)
+    if not guest_id:
+        return {"merged": False, "reason": "no_guest", "usage_incremented": False}
+
+    result = claim_guest_for_email(guest_id, email)
+    response = JSONResponse(content=result)
+    # Invalidate cookie so anonymous reuse isn't possible after sign-in
+    clear_guest_cookie(response)
+    return response
+
+
 @app.get("/tier/{email}")
 async def get_user_tier(email: str):
     """Get tier information for a user."""
@@ -1374,27 +1712,12 @@ async def get_subscription_status(email: str):
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_video(request: AnalyzeRequest):
+async def analyze_video(http_request: Request, body: AnalyzeRequest):
     """Analyze a YouTube video's comments."""
+    auth = authorize_analysis(http_request, body.user_email)
     try:
-        # Check usage limits
-        if not request.user_email:
-            raise HTTPException(
-                status_code=401, 
-                detail="Please sign in to analyze videos"
-            )
-        
-        can_analyze, remaining = check_usage_limit(request.user_email)
-        if not can_analyze:
-            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-            user_limit = TIER_LIMITS[tier]
-            raise HTTPException(
-                status_code=429, 
-                detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!"
-            )
-        
         # Extract video ID
-        video_id = extract_video_id(request.video_url)
+        video_id = extract_video_id(body.video_url)
         
         # Fetch video details and comments - production limit for quota management
         youtube = get_youtube_service()
@@ -1411,13 +1734,9 @@ async def analyze_video(request: AnalyzeRequest):
         prompt = _build_youtube_insights_prompt(comments, video_title, video_description)
         summary, action_items = await asyncio.to_thread(get_combined_insights, prompt)
         
-        # Increment usage count after successful analysis
-        if request.user_email:
-            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-            if TIER_LIMITS[tier] != -1:  # Only increment if not unlimited
-                increment_user_usage(request.user_email)
+        record_analysis_usage(auth)
         
-        return AnalyzeResponse(
+        result = AnalyzeResponse(
             video_id=video_id,
             video_title=video_title,
             total_comments=len(comments),
@@ -1426,6 +1745,13 @@ async def analyze_video(request: AnalyzeRequest):
             action_items=action_items,
             comments=[],
         )
+        if auth["mode"] == "guest":
+            # Pydantic v2: model_dump; fall back for older
+            content = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+            response = JSONResponse(content=content)
+            set_guest_cookie(response, auth["guest_id"])
+            return response
+        return result
     
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1444,22 +1770,12 @@ async def analyze_video(request: AnalyzeRequest):
 
 
 @app.post("/analyze/stream")
-async def analyze_video_stream(request: AnalyzeRequest):
+async def analyze_video_stream(http_request: Request, body: AnalyzeRequest):
     """Stream YouTube analysis via SSE: meta → sentiment → summary deltas → action_items → done."""
-    if not request.user_email:
-        raise HTTPException(status_code=401, detail="Please sign in to analyze videos")
-
-    can_analyze, _remaining = check_usage_limit(request.user_email)
-    if not can_analyze:
-        tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-        user_limit = TIER_LIMITS[tier]
-        raise HTTPException(
-            status_code=429,
-            detail=f"You've reached your {tier} tier limit of {user_limit} analyses. Upgrade to Pro for 15 analyses/month!",
-        )
+    auth = authorize_analysis(http_request, body.user_email)
 
     try:
-        video_id = extract_video_id(request.video_url)
+        video_id = extract_video_id(body.video_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1527,16 +1843,14 @@ async def analyze_video_stream(request: AnalyzeRequest):
                     yield _sse("error", {"detail": item[1]})
                     return
 
-            tier = USER_TIERS.get(request.user_email, DEFAULT_TIER)
-            if TIER_LIMITS[tier] != -1:
-                increment_user_usage(request.user_email)
+            record_analysis_usage(auth)
             yield _sse("done", {"ok": True})
         except Exception as e:
             import traceback
             print(f"Error streaming video analysis: {traceback.format_exc()}")
             yield _sse("error", {"detail": str(e)})
 
-    return StreamingResponse(
+    response = StreamingResponse(
         event_gen(),
         media_type="text/event-stream",
         headers={
@@ -1545,6 +1859,12 @@ async def analyze_video_stream(request: AnalyzeRequest):
             "X-Accel-Buffering": "no",
         },
     )
+    if auth["mode"] == "guest":
+        set_guest_cookie(response, auth["guest_id"])
+    elif auth.get("guest_id"):
+        # Signed-in path already claimed/merged — drop guest cookie
+        clear_guest_cookie(response)
+    return response
 
 
 @app.post("/analyze/pdf")

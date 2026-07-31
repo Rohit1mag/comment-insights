@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { useState } from "react";
+import { getApiUrl } from "@/lib/api";
 
 interface AnalysisData {
   video_id?: string;
@@ -67,17 +68,12 @@ export default function AnalysisResults({
   const handleDownloadPDF = async () => {
     setIsDownloading(true);
     try {
-      const envApiUrl = process.env.NEXT_PUBLIC_API_URL;
-      const isDev =
-        typeof window !== "undefined" &&
-        (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-      const apiUrl = envApiUrl || (isDev ? "http://localhost:8000" : "/api/python");
-
-      const response = await fetch(`${apiUrl}/analyze/pdf`, {
+      const response = await fetch(`${getApiUrl()}/analyze/pdf`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
         body: JSON.stringify({
           video_id: itemId,
           video_title: title || `YouTube Video ${itemId}`,
