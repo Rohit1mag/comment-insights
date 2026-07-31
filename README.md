@@ -231,9 +231,11 @@ One Vercel project runs both services (see root `vercel.json`):
 2. Set **Framework Preset** to **Services** (Build & Deployment settings)
 3. Add env vars to the project (shared across services):
    - `YOUTUBE_API_KEY`, `TOGETHER_API_KEY`
-   - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
+   - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` (the backend verifies
+     session tokens against Clerk's JWKS, deriving the instance from the publishable key)
    - Stripe (if used): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`
    - Optional: `FRONTEND_ORIGINS` (comma-separated; defaults include localhost)
+   - Optional: `CLERK_JWKS_URL` / `CLERK_ISSUER` to override the derived Clerk instance
 4. Deploy. API is same-origin at `/api/python/*` (Stripe webhook: `/api/python/webhook`)
 
 Local alternative to `./start-dev.sh`: `npx vercel dev` (runs both services with the same routing).

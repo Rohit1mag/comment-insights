@@ -2,17 +2,19 @@
 
 import { useState, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, TrendingUp, MessageSquare, CheckCircle2, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
+import { Search, TrendingUp, MessageSquare, CheckCircle2, History, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
 import {
   SignInButton,
   SignUpButton,
   SignedIn,
   SignedOut,
   UserButton,
+  useAuth,
   useUser,
 } from "@clerk/nextjs";
 import { getApiUrl } from "@/lib/api";
@@ -119,6 +121,7 @@ function GuestSignupCta({ message }: { message?: string }) {
 
 export default function Home() {
   const { user, isSignedIn, isLoaded: authLoaded } = useUser();
+  const { getToken } = useAuth();
   const [videoUrl, setVideoUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
@@ -147,25 +150,30 @@ export default function Home() {
 
       try {
         if (isSignedIn && userEmail) {
+          // The backend derives the account from this token, not from any
+          // client-supplied email.
+          const token = await getToken();
+          if (!token) return;
+          const authHeaders = { Authorization: `Bearer ${token}` };
+
           // Merge guest trial into account once per session/email
           if (claimedGuestRef.current !== userEmail) {
             claimedGuestRef.current = userEmail;
             try {
               await fetch(`${apiUrl}/guest/claim`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders,
                 credentials: "include",
-                body: JSON.stringify({ email: userEmail }),
               });
             } catch (err) {
               console.error("Failed to claim guest usage:", err);
             }
           }
 
-          const response = await fetch(
-            `${apiUrl}/usage/${encodeURIComponent(userEmail)}`,
-            { credentials: "include" }
-          );
+          const response = await fetch(`${apiUrl}/usage`, {
+            headers: authHeaders,
+            credentials: "include",
+          });
           if (!cancelled && response.ok) {
             const data = await response.json();
             setUsage(data);
@@ -192,7 +200,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [authLoaded, isSignedIn, userEmail]);
+  }, [authLoaded, isSignedIn, userEmail, getToken]);
 
   const handleAnalyze = async () => {
     if (!videoUrl) {
@@ -228,16 +236,21 @@ export default function Home() {
 
       setLoadingStep("Fetching comments from YouTube…");
 
+      // Session tokens are short-lived, so mint one per request rather than
+      // reusing anything captured on mount.
+      const token = isSignedIn ? await getToken() : null;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
       let response: Response;
       try {
         response = await fetch(`${apiUrl}/analyze/stream`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           credentials: "include",
-          body: JSON.stringify({
-            video_url: videoUrl,
-            user_email: isSignedIn ? userEmail : null,
-          }),
+          body: JSON.stringify({ video_url: videoUrl }),
           signal: controller.signal,
         });
       } finally {
@@ -464,6 +477,13 @@ export default function Home() {
                 ) : (
                   <div className="text-xs text-gray-500">Loading...</div>
                 )}
+                <Link
+                  href="/history"
+                  className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5"
+                >
+                  <History className="h-4 w-4" />
+                  <span className="hidden sm:inline">History</span>
+                </Link>
                 <UserButton 
                   appearance={{
                     elements: {

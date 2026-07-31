@@ -22,7 +22,9 @@ import stripe
 from io import BytesIO
 
 # Import from local module (same directory)
+import db
 from fetch_comments import get_youtube_service, get_video_comments, get_video_details
+from clerk_auth import ClerkAuthError, clerk_configured, email_from_session_token
 from together import Together
 
 # Load environment variables
@@ -42,6 +44,14 @@ app = FastAPI(title="Disstill API", root_path=ROOT_PATH)
 @app.on_event("startup")
 async def startup_event():
     print(f"Disstill API started (model={LLM_MODEL})")
+    if not clerk_configured():
+        # Fails closed rather than trusting client input, so say so loudly:
+        # every signed-in route 401s until an issuer can be resolved.
+        print(
+            "WARNING: Clerk is not configured. Set CLERK_ISSUER (or "
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) and CLERK_SECRET_KEY. "
+            "Signed-in routes will return 401; the guest trial still works."
+        )
 
 LLM_MODEL = "google/gemma-4-31B-it"
 # Together SDK default timeout is ~60s; large comment prompts need longer
@@ -473,11 +483,38 @@ def claim_guest_for_email(guest_id: str, email: str) -> Dict:
     }
 
 
-def authorize_analysis(request: Request, user_email: Optional[str]) -> Dict:
+def get_verified_email(request: Request) -> Optional[str]:
     """
-    Server-side gate for analyze. Signed-in users use email limits;
-    anonymous users use guest cookie + IP rate limit.
+    Email from a verified Clerk session token, or None.
+    A missing/invalid/expired token is not an error here — callers that allow
+    anonymous access fall through to the guest path.
     """
+    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    token = token.strip()
+    if not token:
+        return None
+    try:
+        return email_from_session_token(token)
+    except ClerkAuthError:
+        return None
+
+
+def require_verified_email(request: Request) -> str:
+    """Email from a verified Clerk session token; 401 when there isn't one."""
+    email = get_verified_email(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return email
+
+
+def authorize_analysis(request: Request) -> Dict:
+    """
+    Server-side gate for analyze. Signed-in users (verified Clerk token) use
+    email limits; anonymous users use guest cookie + IP rate limit.
+    """
+    user_email = get_verified_email(request)
     if user_email:
         # Best-effort merge if a used guest cookie is still present
         guest_id = request.cookies.get(GUEST_COOKIE_NAME)
@@ -546,6 +583,41 @@ def record_analysis_usage(auth: Dict) -> None:
         record_guest_analysis(auth["guest_id"], auth["ip"])
 
 
+def record_analysis_history(
+    auth: Dict,
+    video_id: str,
+    video_title: Optional[str],
+    video_url: Optional[str],
+    total_comments: Optional[int],
+    summary: Optional[str],
+    sentiment: Optional[Dict[str, int]],
+    action_items: Optional[List],
+) -> None:
+    """
+    Save a completed analysis to the signed-in user's history, best effort.
+
+    Guests have no account to attach history to, and a database problem must
+    never cost a user the result they already paid a credit for.
+    """
+    if auth.get("mode") != "user" or not auth.get("email"):
+        return
+    if not video_id or not summary:
+        return
+    try:
+        db.save_analysis(
+            user_email=auth["email"],
+            video_id=video_id,
+            video_title=video_title,
+            video_url=video_url,
+            total_comments=total_comments,
+            summary=summary,
+            sentiment=sentiment,
+            action_items=action_items or [],
+        )
+    except Exception as exc:
+        print(f"record_analysis_history failed: {type(exc).__name__}")
+
+
 # CORS: credentials require explicit origins (not *). Prefer same-origin /api/python rewrite.
 _cors_origins = [
     o.strip()
@@ -566,11 +638,6 @@ app.add_middleware(
 
 class AnalyzeRequest(BaseModel):
     video_url: str
-    user_email: Optional[str] = None
-
-
-class ClaimGuestRequest(BaseModel):
-    email: str
 
 
 class UsageResponse(BaseModel):
@@ -613,6 +680,33 @@ class AnalyzeResponse(BaseModel):
     sentiment: Dict[str, int]
     action_items: List[ActionItem]
     comments: List[Comment] = Field(default_factory=list)
+
+
+class HistoryItem(BaseModel):
+    id: str
+    video_id: str
+    video_title: Optional[str] = None
+    video_url: Optional[str] = None
+    total_comments: Optional[int] = None
+    sentiment: Dict[str, int] = Field(default_factory=dict)
+    created_at: str
+
+
+class HistoryListResponse(BaseModel):
+    items: List[HistoryItem] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+class HistoryDetailResponse(BaseModel):
+    id: str
+    video_id: str
+    video_title: Optional[str] = None
+    video_url: Optional[str] = None
+    total_comments: Optional[int] = None
+    summary: str = ""
+    sentiment: Dict[str, int] = Field(default_factory=dict)
+    action_items: List[ActionItem] = Field(default_factory=list)
+    created_at: str
 
 
 class PDFRequest(BaseModel):
@@ -1513,10 +1607,14 @@ async def root():
     return {"message": "Disstill API", "status": "running"}
 
 
-@app.get("/usage/{email}")
-async def get_usage(email: str) -> UsageResponse:
-    """Get usage statistics for a user."""
-    # Get user's tier
+# The /{_email} variants are legacy shapes kept so clients still running an
+# older bundle don't 404 mid-deploy. The address in the path is ignored — the
+# account always comes from the verified token.
+@app.get("/usage")
+@app.get("/usage/{_email}")
+async def get_usage(request: Request, _email: Optional[str] = None) -> UsageResponse:
+    """Get usage statistics for the signed-in user."""
+    email = require_verified_email(request)
     tier = USER_TIERS.get(email, DEFAULT_TIER)
     user_limit = TIER_LIMITS[tier]
     is_unlimited = user_limit == -1
@@ -1555,14 +1653,12 @@ async def get_guest_usage(request: Request):
 
 
 @app.post("/guest/claim")
-async def claim_guest_usage(request: Request, body: ClaimGuestRequest):
+async def claim_guest_usage(request: Request):
     """
     On Clerk sign-in/sign-up: merge guest trial into account usage once.
     If the guest already used their free analysis, account monthly usage += 1.
     """
-    email = (body.email or "").strip()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid email required")
+    email = require_verified_email(request)
 
     guest_id = request.cookies.get(GUEST_COOKIE_NAME)
     if not guest_id:
@@ -1575,9 +1671,11 @@ async def claim_guest_usage(request: Request, body: ClaimGuestRequest):
     return response
 
 
-@app.get("/tier/{email}")
-async def get_user_tier(email: str):
-    """Get tier information for a user."""
+@app.get("/tier")
+@app.get("/tier/{_email}")
+async def get_user_tier(request: Request, _email: Optional[str] = None):
+    """Get tier information for the signed-in user."""
+    email = require_verified_email(request)
     tier = USER_TIERS.get(email, DEFAULT_TIER)
     limit = TIER_LIMITS[tier]
     return {
@@ -1588,20 +1686,21 @@ async def get_user_tier(email: str):
 
 
 class CheckoutRequest(BaseModel):
-    email: str
     success_url: str
     cancel_url: str
 
 
 @app.post("/create-checkout-session")
-async def create_checkout_session(request: CheckoutRequest):
+async def create_checkout_session(http_request: Request, body: CheckoutRequest):
     """Create a Stripe checkout session for Pro subscription."""
+    email = require_verified_email(http_request)
+
     if not STRIPE_PRICE_ID:
         raise HTTPException(status_code=500, detail="Stripe price ID not configured")
     
     try:
         checkout_session = stripe.checkout.Session.create(
-            customer_email=request.email,
+            customer_email=email,
             payment_method_types=["card"],
             line_items=[
                 {
@@ -1610,10 +1709,10 @@ async def create_checkout_session(request: CheckoutRequest):
                 }
             ],
             mode="subscription",
-            success_url=request.success_url,
-            cancel_url=request.cancel_url,
+            success_url=body.success_url,
+            cancel_url=body.cancel_url,
             metadata={
-                "user_email": request.email,
+                "user_email": email,
             },
         )
         return {"checkout_url": checkout_session.url, "session_id": checkout_session.id}
@@ -1695,9 +1794,11 @@ async def stripe_webhook(request: Request):
     return {"status": "success"}
 
 
-@app.get("/subscription-status/{email}")
-async def get_subscription_status(email: str):
-    """Get subscription status for a user."""
+@app.get("/subscription-status")
+@app.get("/subscription-status/{_email}")
+async def get_subscription_status(request: Request, _email: Optional[str] = None):
+    """Get subscription status for the signed-in user."""
+    email = require_verified_email(request)
     subscriptions = load_subscriptions_data()
     subscription_data = subscriptions.get(email)
     
@@ -1722,10 +1823,94 @@ async def get_subscription_status(email: str):
         }
 
 
+def _history_sentiment(raw) -> Dict[str, int]:
+    """Normalize a stored sentiment blob into the three buckets the UI charts."""
+    raw = raw if isinstance(raw, dict) else {}
+    out: Dict[str, int] = {}
+    for key in ("positive", "neutral", "negative"):
+        try:
+            out[key] = int(raw.get(key) or 0)
+        except (TypeError, ValueError):
+            out[key] = 0
+    return out
+
+
+def _history_item(row: Dict) -> HistoryItem:
+    return HistoryItem(
+        id=row["id"],
+        video_id=row["video_id"],
+        video_title=row.get("video_title"),
+        video_url=row.get("video_url"),
+        total_comments=row.get("total_comments"),
+        sentiment=_history_sentiment(row.get("sentiment")),
+        created_at=row["created_at"],
+    )
+
+
+# Declared before /history/{analysis_id} so the static path always wins.
+@app.get("/history")
+async def get_history(
+    request: Request,
+    limit: int = db.DEFAULT_LIST_LIMIT,
+    before: Optional[str] = None,
+) -> HistoryListResponse:
+    """List the signed-in user's past analyses, newest first."""
+    email = require_verified_email(request)
+    limit = max(1, min(limit, db.MAX_LIST_LIMIT))
+
+    if not db.configured():
+        return HistoryListResponse()
+
+    try:
+        rows = db.list_analyses(email, limit=limit, before=before)
+    except Exception as exc:
+        # History is an extra, not the product — degrade to empty rather than 500.
+        print(f"list_analyses failed: {type(exc).__name__}")
+        return HistoryListResponse()
+
+    items = [_history_item(row) for row in rows]
+    # A short page means there is nothing left behind the cursor.
+    next_cursor = items[-1].created_at if len(items) == limit else None
+    return HistoryListResponse(items=items, next_cursor=next_cursor)
+
+
+@app.get("/history/{analysis_id}")
+async def get_history_detail(request: Request, analysis_id: str) -> HistoryDetailResponse:
+    """Get one past analysis owned by the signed-in user."""
+    email = require_verified_email(request)
+
+    row = None
+    if db.configured():
+        try:
+            row = db.get_analysis(analysis_id, email)
+        except Exception as exc:
+            print(f"get_analysis failed: {type(exc).__name__}")
+            raise HTTPException(
+                status_code=503, detail="History is temporarily unavailable"
+            )
+
+    if row is None:
+        # Same answer for "no such analysis" and "not yours", so an id from
+        # another account reveals nothing.
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    return HistoryDetailResponse(
+        id=row["id"],
+        video_id=row["video_id"],
+        video_title=row.get("video_title"),
+        video_url=row.get("video_url"),
+        total_comments=row.get("total_comments"),
+        summary=row.get("summary") or "",
+        sentiment=_history_sentiment(row.get("sentiment")),
+        action_items=_coerce_action_items(row.get("action_items")),
+        created_at=row["created_at"],
+    )
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_video(http_request: Request, body: AnalyzeRequest):
     """Analyze a YouTube video's comments."""
-    auth = authorize_analysis(http_request, body.user_email)
+    auth = authorize_analysis(http_request)
     try:
         # Extract video ID
         video_id = extract_video_id(body.video_url)
@@ -1746,6 +1931,16 @@ async def analyze_video(http_request: Request, body: AnalyzeRequest):
         summary, action_items = await asyncio.to_thread(get_combined_insights, prompt)
         
         record_analysis_usage(auth)
+        record_analysis_history(
+            auth,
+            video_id=video_id,
+            video_title=video_title,
+            video_url=body.video_url,
+            total_comments=len(comments),
+            summary=summary,
+            sentiment=sentiment,
+            action_items=action_items,
+        )
         
         result = AnalyzeResponse(
             video_id=video_id,
@@ -1783,7 +1978,7 @@ async def analyze_video(http_request: Request, body: AnalyzeRequest):
 @app.post("/analyze/stream")
 async def analyze_video_stream(http_request: Request, body: AnalyzeRequest):
     """Stream YouTube analysis via SSE: meta → sentiment → summary deltas → action_items → done."""
-    auth = authorize_analysis(http_request, body.user_email)
+    auth = authorize_analysis(http_request)
 
     try:
         video_id = extract_video_id(body.video_url)
@@ -1836,6 +2031,11 @@ async def analyze_video_stream(http_request: Request, body: AnalyzeRequest):
 
             loop.run_in_executor(None, run_stream)
 
+            # Bound outside the loop so the history save can still see them after
+            # the stream drains.
+            final_summary: str = ""
+            final_action_items: List = []
+
             while True:
                 item = await queue.get()
                 if item is None:
@@ -1844,17 +2044,27 @@ async def analyze_video_stream(http_request: Request, body: AnalyzeRequest):
                 if kind == "summary_delta":
                     yield _sse("summary_delta", {"text": item[1]})
                 elif kind == "done":
-                    _summary, action_items = item[1], item[2]
-                    yield _sse("summary", {"text": _summary})
+                    final_summary, final_action_items = item[1], item[2]
+                    yield _sse("summary", {"text": final_summary})
                     yield _sse(
                         "action_items",
-                        [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in action_items],
+                        [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in final_action_items],
                     )
                 elif kind == "error":
                     yield _sse("error", {"detail": item[1]})
                     return
 
             record_analysis_usage(auth)
+            record_analysis_history(
+                auth,
+                video_id=video_id,
+                video_title=video_title,
+                video_url=body.video_url,
+                total_comments=len(comments),
+                summary=final_summary,
+                sentiment=sentiment,
+                action_items=final_action_items,
+            )
             yield _sse("done", {"ok": True})
         except Exception as e:
             import traceback

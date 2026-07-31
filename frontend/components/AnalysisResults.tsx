@@ -39,6 +39,8 @@ interface AnalysisResultsProps {
   onNewAnalysis: () => void;
   isStreaming?: boolean;
   summaryStreaming?: boolean;
+  // History reuses this view, where the back button returns to the list
+  backLabel?: string;
 }
 
 const SENTIMENT_COLORS = {
@@ -52,6 +54,7 @@ export default function AnalysisResults({
   onNewAnalysis,
   isStreaming = false,
   summaryStreaming = false,
+  backLabel = "Analyze Another Video",
 }: AnalysisResultsProps) {
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -136,7 +139,7 @@ export default function AnalysisResults({
             className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 hover:text-white transition-all duration-300 rounded-xl px-5 py-2.5"
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Analyze Another Video
+            {backLabel}
           </Button>
           <Button
             onClick={handleDownloadPDF}
