@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,8 +15,13 @@ import {
   UserButton,
   useUser,
 } from "@clerk/nextjs";
-import AnalysisResults from "@/components/AnalysisResults";
 import { getApiUrl } from "@/lib/api";
+
+// Recharts is ~135KB gzipped and only renders after an analysis, so keep it out
+// of the landing-page bundle.
+const AnalysisResults = dynamic(() => import("@/components/AnalysisResults"), {
+  ssr: false,
+});
 
 interface UsageData {
   used: number;
