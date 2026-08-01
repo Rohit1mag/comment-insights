@@ -310,7 +310,8 @@ def get_channel_profile(channel_id: str) -> Optional[Dict]:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                select channel, top_videos, profile, competitors, computed_at
+                select channel, top_videos, profile, competitors, computed_at,
+                       ideas, competitor_videos, ideas_computed_at
                 from channel_profiles
                 where channel_id = %s
                 """,
@@ -329,7 +330,11 @@ def save_channel_profile(
     competitors: List[Dict],
 ) -> bool:
     """Cache a computed profile. Never raises: a cache miss is cheaper than a
-    lost result."""
+    lost result.
+
+    Recomputing the step-1 profile invalidates step-2 ideas, since they were
+    derived from the previous competitor set.
+    """
     if not channel_id:
         return False
 
@@ -338,15 +343,19 @@ def save_channel_profile(
             cur.execute(
                 """
                 insert into channel_profiles (
-                    channel_id, channel, top_videos, profile, competitors, computed_at
+                    channel_id, channel, top_videos, profile, competitors, computed_at,
+                    ideas, competitor_videos, ideas_computed_at
                 )
-                values (%s, %s, %s, %s, %s, now())
+                values (%s, %s, %s, %s, %s, now(), '[]'::jsonb, '[]'::jsonb, null)
                 on conflict (channel_id) do update set
                     channel = excluded.channel,
                     top_videos = excluded.top_videos,
                     profile = excluded.profile,
                     competitors = excluded.competitors,
-                    computed_at = now()
+                    computed_at = now(),
+                    ideas = '[]'::jsonb,
+                    competitor_videos = '[]'::jsonb,
+                    ideas_computed_at = null
                 """,
                 (
                     channel_id,
@@ -362,6 +371,40 @@ def save_channel_profile(
         return _run(operation)
     except Exception as exc:
         print(f"save_channel_profile failed: {type(exc).__name__}")
+        return False
+
+
+def save_channel_ideas(
+    channel_id: str,
+    ideas: List[Dict],
+    competitor_videos: List[Dict],
+) -> bool:
+    """Cache step-2 ideas for a channel that already has a profile. Never raises."""
+    if not channel_id:
+        return False
+
+    def operation(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update channel_profiles
+                set ideas = %s,
+                    competitor_videos = %s,
+                    ideas_computed_at = now()
+                where channel_id = %s
+                """,
+                (
+                    Jsonb(_jsonable(ideas or [])),
+                    Jsonb(_jsonable(competitor_videos or [])),
+                    channel_id,
+                ),
+            )
+            return cur.rowcount > 0
+
+    try:
+        return _run(operation)
+    except Exception as exc:
+        print(f"save_channel_ideas failed: {type(exc).__name__}")
         return False
 
 

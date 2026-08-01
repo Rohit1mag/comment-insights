@@ -32,12 +32,17 @@ MAX_DISCOVERY_QUERIES = 5
 DISCOVERY_RESULTS_PER_QUERY = 25
 MAX_CANDIDATES_TO_HYDRATE = 50
 COMPETITOR_COUNT = 3
+COMPETITOR_TOP_VIDEOS = 10
+IDEA_COUNT = 3
 PROFILE_TTL_DAYS = 7
 
 # resolve (1) + top videos search (100) + uploads top-up (<=3) +
 # videos.list (<=4) + 5 discovery searches (500) + candidate stats (3) +
 # candidate hydrate (1)
 PROFILE_QUOTA_ESTIMATE = 612
+
+# 3 competitors × (search.list 100 + videos.list 1) ≈ 303 when search is full.
+IDEAS_QUOTA_ESTIMATE = 303
 
 # Ranking weights — see rank_competitors() for what each component means.
 # They sum to 1.0 so a score is always 0-100 and comparable across channels.
@@ -776,3 +781,233 @@ def profile_is_fresh(
     if computed_at.tzinfo is None:
         computed_at = computed_at.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - computed_at < timedelta(days=ttl_days)
+
+
+def fetch_competitor_top_videos(
+    youtube, competitors: List[Dict], limit: int = COMPETITOR_TOP_VIDEOS
+) -> List[Dict]:
+    """Top videos for each competitor. Cost: ~100 units per competitor."""
+    packages: List[Dict] = []
+    for competitor in competitors[:COMPETITOR_COUNT]:
+        channel_id = competitor.get("channel_id") or ""
+        if not channel_id:
+            continue
+        videos = fetch_top_videos(
+            youtube,
+            channel_id,
+            limit=limit,
+            uploads_playlist_id=competitor.get("uploads_playlist_id", "") or "",
+        )
+        packages.append(
+            {
+                "channel_id": channel_id,
+                "title": competitor.get("title", ""),
+                "handle": competitor.get("handle", "") or "",
+                "top_videos": videos,
+            }
+        )
+    return packages
+
+
+def build_ideas_prompt(
+    channel: Dict,
+    vibe: Dict,
+    user_top_videos: List[Dict],
+    competitor_packages: List[Dict],
+) -> str:
+    user_titles = "\n".join(
+        f"{i+1}. {v['title']} ({v['view_count']:,} views)"
+        for i, v in enumerate(user_top_videos[:TOP_VIDEOS_COUNT])
+    ) or "(no public top videos available)"
+
+    competitor_blocks: List[str] = []
+    for package in competitor_packages:
+        video_lines = []
+        for i, v in enumerate(package.get("top_videos") or []):
+            line = f"  {i+1}. {v['title']} ({v['view_count']:,} views)"
+            if v.get("video_id"):
+                line += f" [{v['video_id']}]"
+            video_lines.append(line)
+        lines = "\n".join(video_lines) or "  (no videos found)"
+        competitor_blocks.append(
+            f"Competitor: {package.get('title', '')} "
+            f"({package.get('handle') or package.get('channel_id', '')})\n{lines}"
+        )
+
+    competitors_text = "\n\n".join(competitor_blocks) or "(no competitors)"
+    topics = ", ".join(vibe.get("topics") or []) or "unknown"
+
+    return f"""You recommend YouTube video ideas for a creator by studying what already worked for their closest competitors — then adapting those patterns to THIS creator's channel, not copying titles.
+
+Creator channel: {channel.get('title', '')}
+Niche: {vibe.get('niche') or 'unknown'}
+Topics: {topics}
+Format: {vibe.get('format') or 'unknown'}
+Audience: {vibe.get('audience') or 'unknown'}
+Tone: {vibe.get('tone') or 'unknown'}
+Vibe summary: {vibe.get('summary') or ''}
+
+Creator's own top videos:
+{user_titles}
+
+Competitor top videos (what is already winning in this niche):
+{competitors_text}
+
+Return ONLY a JSON object, no prose and no markdown fences:
+{{
+  "ideas": [
+    {{
+      "title": "a specific, publishable working title the creator could use",
+      "hook": "the first 10-15 seconds / thumbnail promise, one sentence",
+      "angle": "how to film and frame it in THIS creator's style, one sentence",
+      "why_it_works": "why this concept wins for their audience, grounded in the competitor evidence, one or two sentences",
+      "inspired_by": [
+        {{
+          "channel_title": "competitor name",
+          "video_title": "exact competitor video title that inspired this",
+          "video_id": "11-char id from the list above, or empty string if unsure"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- Return exactly {IDEA_COUNT} ideas
+- Each idea must be clearly adapted to the creator's niche, format, audience, and tone — not a clone of a competitor title
+- Prefer concepts that competitors proved with high views but that the creator has not already covered in their top videos
+- inspired_by must reference real videos from the competitor list (use the video_id in brackets when present)
+- Titles should be concrete and searchable, not vague ("Things I Learned…")
+- No hashtags, no emoji spam, no "Part 1" without a reason"""
+
+
+def coerce_ideas(payload: Optional[Dict], competitor_packages: List[Dict]) -> List[Dict]:
+    """Normalize LLM ideas; drop junk and pad nothing — fewer than 3 is ok."""
+    data = payload or {}
+    raw = data.get("ideas") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+
+    known_videos: Dict[str, Dict] = {}
+    for package in competitor_packages:
+        for video in package.get("top_videos") or []:
+            vid = video.get("video_id") or ""
+            if vid:
+                known_videos[vid] = {
+                    "channel_title": package.get("title", ""),
+                    "video_title": video.get("title", ""),
+                    "video_id": vid,
+                    "url": video.get("url")
+                    or f"https://www.youtube.com/watch?v={vid}",
+                    "view_count": video.get("view_count", 0),
+                }
+
+    ideas: List[Dict] = []
+    for item in raw[:IDEA_COUNT]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+
+        inspired_raw = item.get("inspired_by")
+        inspired: List[Dict] = []
+        if isinstance(inspired_raw, list):
+            for ref in inspired_raw[:3]:
+                if not isinstance(ref, dict):
+                    continue
+                video_id = str(ref.get("video_id") or "").strip()
+                if video_id in known_videos:
+                    inspired.append(known_videos[video_id])
+                    continue
+                video_title = str(ref.get("video_title") or "").strip()
+                channel_title = str(ref.get("channel_title") or "").strip()
+                if not video_title:
+                    continue
+                inspired.append(
+                    {
+                        "channel_title": channel_title,
+                        "video_title": video_title,
+                        "video_id": video_id if _VIDEO_ID_RE.match(video_id) else "",
+                        "url": (
+                            f"https://www.youtube.com/watch?v={video_id}"
+                            if _VIDEO_ID_RE.match(video_id)
+                            else ""
+                        ),
+                        "view_count": 0,
+                    }
+                )
+
+        ideas.append(
+            {
+                "title": title[:160],
+                "hook": str(item.get("hook") or "").strip()[:280],
+                "angle": str(item.get("angle") or "").strip()[:280],
+                "why_it_works": str(item.get("why_it_works") or "").strip()[:500],
+                "inspired_by": inspired,
+            }
+        )
+    return ideas
+
+
+def _fallback_ideas(
+    channel: Dict, vibe: Dict, competitor_packages: List[Dict]
+) -> List[Dict]:
+    """When the LLM fails, surface the strongest competitor patterns as prompts."""
+    ideas: List[Dict] = []
+    niche = vibe.get("niche") or channel.get("title") or "your niche"
+    for package in competitor_packages:
+        if len(ideas) >= IDEA_COUNT:
+            break
+        videos = package.get("top_videos") or []
+        if not videos:
+            continue
+        top = videos[0]
+        ideas.append(
+            {
+                "title": f"{top['title']} — your take for {niche}",
+                "hook": f"Open with the same tension that made this hit for {package.get('title', 'a rival')}.",
+                "angle": f"Shoot it in your own format and tone so it fits {channel.get('title', 'your channel')}.",
+                "why_it_works": (
+                    f"{package.get('title', 'A competitor')}'s \"{top['title']}\" "
+                    f"drew {top.get('view_count', 0):,} views — the pattern is proven in your niche."
+                ),
+                "inspired_by": [
+                    {
+                        "channel_title": package.get("title", ""),
+                        "video_title": top.get("title", ""),
+                        "video_id": top.get("video_id", ""),
+                        "url": top.get("url")
+                        or f"https://www.youtube.com/watch?v={top.get('video_id', '')}",
+                        "view_count": top.get("view_count", 0),
+                    }
+                ],
+            }
+        )
+    return ideas
+
+
+def compute_video_ideas(
+    youtube,
+    channel: Dict,
+    vibe: Dict,
+    user_top_videos: List[Dict],
+    competitors: List[Dict],
+    llm_json: Callable[[str], Optional[Dict]],
+) -> Dict:
+    """Step 2: competitor top videos → 3 tailored ideas for the user's channel."""
+    if not competitors:
+        return {"ideas": [], "competitor_videos": []}
+
+    competitor_packages = fetch_competitor_top_videos(youtube, competitors)
+    payload = llm_json(
+        build_ideas_prompt(channel, vibe, user_top_videos, competitor_packages)
+    )
+    ideas = coerce_ideas(payload, competitor_packages)
+    if not ideas:
+        ideas = _fallback_ideas(channel, vibe, competitor_packages)
+
+    return {
+        "ideas": ideas,
+        "competitor_videos": competitor_packages,
+    }

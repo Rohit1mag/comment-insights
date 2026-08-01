@@ -816,6 +816,40 @@ class ChannelProfileResponse(BaseModel):
     computed_at: Optional[str] = None
 
 
+class ChannelIdeasRequest(BaseModel):
+    refresh: bool = False
+
+
+class InspiredByVideo(BaseModel):
+    channel_title: str = ""
+    video_title: str = ""
+    video_id: str = ""
+    url: str = ""
+    view_count: int = 0
+
+
+class VideoIdea(BaseModel):
+    title: str
+    hook: str = ""
+    angle: str = ""
+    why_it_works: str = ""
+    inspired_by: List[InspiredByVideo] = Field(default_factory=list)
+
+
+class CompetitorVideoPackage(BaseModel):
+    channel_id: str
+    title: str = ""
+    handle: str = ""
+    top_videos: List[TopVideo] = Field(default_factory=list)
+
+
+class ChannelIdeasResponse(BaseModel):
+    ideas: List[VideoIdea] = Field(default_factory=list)
+    competitor_videos: List[CompetitorVideoPackage] = Field(default_factory=list)
+    cached: bool = False
+    computed_at: Optional[str] = None
+
+
 def extract_video_id(url: str) -> str:
     """Extract video ID from various YouTube URL formats."""
     patterns = [
@@ -2302,6 +2336,44 @@ def _competitors(rows: Optional[List[Dict]]) -> List[CompetitorChannel]:
     return items
 
 
+def _video_ideas(rows: Optional[List[Dict]]) -> List[VideoIdea]:
+    items: List[VideoIdea] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        inspired = [
+            InspiredByVideo(**{k: v for k, v in ref.items() if k in InspiredByVideo.model_fields})
+            for ref in (row.get("inspired_by") or [])
+            if isinstance(ref, dict)
+        ]
+        items.append(
+            VideoIdea(
+                title=str(row.get("title") or ""),
+                hook=str(row.get("hook") or ""),
+                angle=str(row.get("angle") or ""),
+                why_it_works=str(row.get("why_it_works") or ""),
+                inspired_by=inspired,
+            )
+        )
+    return items
+
+
+def _competitor_video_packages(rows: Optional[List[Dict]]) -> List[CompetitorVideoPackage]:
+    packages: List[CompetitorVideoPackage] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        packages.append(
+            CompetitorVideoPackage(
+                channel_id=str(row.get("channel_id") or ""),
+                title=str(row.get("title") or ""),
+                handle=str(row.get("handle") or ""),
+                top_videos=_top_videos(row.get("top_videos")),
+            )
+        )
+    return packages
+
+
 def _enforce_profile_throttle(email: str) -> None:
     """Cap uncached profile runs per account.
 
@@ -2485,6 +2557,102 @@ async def get_channel_profile(
         top_videos=_top_videos(result["top_videos"]),
         vibe=VibeProfile(**result["vibe"]),
         competitors=_competitors(result["competitors"]),
+        cached=False,
+        computed_at=_utc_now_iso(),
+    )
+
+
+@app.post("/channel/ideas")
+async def get_channel_ideas(
+    request: Request, body: ChannelIdeasRequest
+) -> ChannelIdeasResponse:
+    """Recommend 3 video ideas from each competitor's top 10 videos.
+
+    Requires a fresh step-1 profile (channel + competitors) already cached for
+    the signed-in user's linked channel.
+    """
+    email = require_verified_email(request)
+
+    if not db.configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Ideas aren't available right now — database is not configured.",
+        )
+
+    try:
+        saved = db.get_user_channel(email)
+    except Exception as exc:
+        print(f"get_user_channel failed: {type(exc).__name__}")
+        saved = None
+    if not saved:
+        raise HTTPException(
+            status_code=400,
+            detail="Add your channel and profile it before we can recommend ideas.",
+        )
+
+    channel_id = saved["channel_id"]
+    try:
+        cached = db.get_channel_profile(channel_id)
+    except Exception as exc:
+        print(f"get_channel_profile failed: {type(exc).__name__}")
+        cached = None
+
+    if not cached or not channel_insights.profile_is_fresh(cached.get("computed_at")):
+        raise HTTPException(
+            status_code=400,
+            detail="Profile your channel first so we know your vibe and competitors.",
+        )
+
+    if not body.refresh and channel_insights.profile_is_fresh(
+        cached.get("ideas_computed_at")
+    ):
+        computed_at = cached.get("ideas_computed_at")
+        return ChannelIdeasResponse(
+            ideas=_video_ideas(cached.get("ideas")),
+            competitor_videos=_competitor_video_packages(cached.get("competitor_videos")),
+            cached=True,
+            computed_at=computed_at.isoformat() if computed_at else None,
+        )
+
+    competitors = cached.get("competitors") or []
+    if not competitors:
+        raise HTTPException(
+            status_code=400,
+            detail="We need at least one competitor before we can recommend ideas.",
+        )
+
+    _enforce_profile_throttle(email)
+    youtube = _youtube_service()
+
+    try:
+        result = await asyncio.to_thread(
+            channel_insights.compute_video_ideas,
+            youtube,
+            cached.get("channel") or {},
+            cached.get("profile") or {},
+            cached.get("top_videos") or [],
+            competitors,
+            _channel_llm_json,
+        )
+    except ChannelInsightsError as exc:
+        raise _channel_http_error(exc)
+    except Exception as exc:
+        print(f"compute_video_ideas failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="We couldn't generate video ideas. Please try again.",
+        )
+
+    db.save_channel_ideas(
+        channel_id=channel_id,
+        ideas=result["ideas"],
+        competitor_videos=result["competitor_videos"],
+    )
+    db.record_channel_profile_run(email, channel_id)
+
+    return ChannelIdeasResponse(
+        ideas=_video_ideas(result["ideas"]),
+        competitor_videos=_competitor_video_packages(result["competitor_videos"]),
         cached=False,
         computed_at=_utc_now_iso(),
     )

@@ -99,6 +99,34 @@ interface ChannelProfileResponse {
   computed_at: string | null;
 }
 
+interface InspiredByVideo {
+  channel_title: string;
+  video_title: string;
+  video_id: string;
+  url: string;
+  view_count: number;
+}
+
+interface VideoIdea {
+  title: string;
+  hook: string;
+  angle: string;
+  why_it_works: string;
+  inspired_by: InspiredByVideo[];
+}
+
+interface ChannelIdeasResponse {
+  ideas: VideoIdea[];
+  competitor_videos: Array<{
+    channel_id: string;
+    title: string;
+    handle: string;
+    top_videos: TopVideo[];
+  }>;
+  cached: boolean;
+  computed_at: string | null;
+}
+
 interface SavedChannelResponse {
   channel: ChannelSummary | null;
 }
@@ -109,6 +137,7 @@ interface ProfileRequestBody {
 }
 
 const PROFILE_TIMEOUT_MS = 300000;
+const IDEAS_TIMEOUT_MS = 300000;
 const STAGE_INTERVAL_MS = 6000;
 
 const LOADING_STAGES = [
@@ -117,6 +146,12 @@ const LOADING_STAGES = [
   "Reading the vibe…",
   "Scouting competitors…",
   "Ranking the biggest rivals…",
+];
+
+const IDEAS_LOADING_STAGES = [
+  "Studying competitor hits…",
+  "Finding patterns that travel…",
+  "Writing ideas for your channel…",
 ];
 
 async function readError(response: Response, fallback: string): Promise<string> {
@@ -264,20 +299,71 @@ export default function IdeasPage() {
 
   const [channel, setChannel] = useState<ChannelSummary | null>(null);
   const [profile, setProfile] = useState<ChannelProfileResponse | null>(null);
+  const [ideas, setIdeas] = useState<VideoIdea[]>([]);
   const [channelInput, setChannelInput] = useState("");
   const [showInput, setShowInput] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [resolving, setResolving] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [ideasLoading, setIdeasLoading] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
+  const [ideasStageIndex, setIdeasStageIndex] = useState(0);
   const [error, setError] = useState("");
+  const [ideasError, setIdeasError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const loadIdeas = useCallback(
+    async (options: { refresh?: boolean } = {}) => {
+      setIdeasLoading(true);
+      setIdeasStageIndex(0);
+      setIdeasError("");
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), IDEAS_TIMEOUT_MS);
+
+      try {
+        const token = await getToken();
+        if (!token) throw new Error("Sign in required");
+
+        const response = await fetch(`${getApiUrl()}/channel/ideas`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          credentials: "include",
+          body: JSON.stringify(options),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(await readError(response, "Failed to generate video ideas"));
+        }
+
+        const data: ChannelIdeasResponse = await response.json();
+        setIdeas(data.ideas);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          setIdeasError("Idea generation took too long. Please try again.");
+        } else {
+          setIdeasError(
+            err instanceof Error ? err.message : "Failed to generate video ideas"
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        setIdeasLoading(false);
+      }
+    },
+    [getToken]
+  );
 
   const loadProfile = useCallback(
     async (options: ProfileRequestBody) => {
       setProfileLoading(true);
       setStageIndex(0);
       setError("");
+      setIdeas([]);
+      setIdeasError("");
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), PROFILE_TIMEOUT_MS);
@@ -304,6 +390,9 @@ export default function IdeasPage() {
         setProfile(data);
         setChannel(data.channel);
         setShowInput(false);
+        if ((data.competitors?.length ?? 0) > 0) {
+          void loadIdeas({ refresh: Boolean(options.refresh) });
+        }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
           setError("That took too long. Please try again.");
@@ -315,7 +404,7 @@ export default function IdeasPage() {
         setProfileLoading(false);
       }
     },
-    [getToken]
+    [getToken, loadIdeas]
   );
 
   useEffect(() => {
@@ -324,6 +413,7 @@ export default function IdeasPage() {
     if (!isSignedIn) {
       setChannel(null);
       setProfile(null);
+      setIdeas([]);
       setBootstrapping(false);
       return;
     }
@@ -380,6 +470,18 @@ export default function IdeasPage() {
     return () => clearInterval(timer);
   }, [profileLoading]);
 
+  useEffect(() => {
+    if (!ideasLoading) return;
+
+    const timer = setInterval(() => {
+      setIdeasStageIndex((prev) =>
+        prev >= IDEAS_LOADING_STAGES.length - 1 ? prev : prev + 1
+      );
+    }, STAGE_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [ideasLoading]);
+
   const handleResolve = async () => {
     const validation = validateChannelInput(channelInput);
     if (validation) {
@@ -409,6 +511,7 @@ export default function IdeasPage() {
       const resolved: ChannelSummary = await response.json();
       setChannel(resolved);
       setProfile(null);
+      setIdeas([]);
       setShowInput(false);
       setChannelInput("");
       await loadProfile({});
@@ -434,7 +537,7 @@ export default function IdeasPage() {
     }
   };
 
-  const busy = resolving || profileLoading;
+  const busy = resolving || profileLoading || ideasLoading;
   const competitors = profile?.competitors ?? [];
   const topVideos = profile?.top_videos ?? [];
   const vibe = profile?.vibe;
@@ -526,7 +629,7 @@ export default function IdeasPage() {
               Content Ideas
             </h2>
             <p className="text-gray-400 text-lg">
-              Read your channel&apos;s vibe and see who you&apos;re really up against.
+              Study your rivals&apos; hits, then get three video ideas that fit your channel.
             </p>
           </div>
 
@@ -957,6 +1060,166 @@ export default function IdeasPage() {
                         </p>
                       )}
                     </div>
+
+                    {competitors.length > 0 && (
+                      <div className="animate-in-5 mt-12">
+                        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+                          <div>
+                            <h3 className="text-2xl font-bold text-white mb-2">
+                              Video ideas for you
+                            </h3>
+                            <p className="text-gray-400 text-sm">
+                              Adapted from each rival&apos;s top 10 — written for your vibe, not
+                              copied from theirs.
+                            </p>
+                          </div>
+                          {!ideasLoading && (
+                            <Button
+                              onClick={() => void loadIdeas({ refresh: true })}
+                              disabled={busy}
+                              className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-200 hover:text-white transition-all duration-300 rounded-xl px-5 py-2"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              Refresh ideas
+                            </Button>
+                          )}
+                        </div>
+
+                        {ideasError && (
+                          <div className="border border-red-400/30 bg-red-500/10 p-4 mb-6 rounded-2xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-3">
+                            <p className="text-sm text-red-300 font-medium">{ideasError}</p>
+                            <Button
+                              onClick={() => void loadIdeas({})}
+                              disabled={busy}
+                              className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-200 hover:text-white transition-all duration-300 rounded-xl px-5 py-2"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              Retry
+                            </Button>
+                          </div>
+                        )}
+
+                        {ideasLoading && (
+                          <div className="space-y-4">
+                            <div className="border border-blue-400/30 bg-blue-500/10 p-4 rounded-2xl backdrop-blur-xl">
+                              <div className="text-sm text-blue-300 flex items-center gap-3 font-medium">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>{IDEAS_LOADING_STAGES[ideasStageIndex]}</span>
+                              </div>
+                            </div>
+                            <div className="grid gap-6 md:grid-cols-3">
+                              {[0, 1, 2].map((i) => (
+                                <div
+                                  key={i}
+                                  className="glass border border-white/10 rounded-3xl p-6 h-64 bg-white/5 animate-pulse"
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {!ideasLoading && ideas.length > 0 && (
+                          <div className="grid gap-6 md:grid-cols-3">
+                            {ideas.map((idea, index) => (
+                              <Card
+                                key={`${idea.title}-${index}`}
+                                className="glass border-white/10 hover:border-blue-400/30 hover:bg-white/5 transition-all duration-300 rounded-3xl overflow-hidden flex flex-col"
+                              >
+                                <CardHeader className="p-6 pb-3">
+                                  <div className="flex items-center gap-3 mb-3">
+                                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center flex-shrink-0">
+                                      <Lightbulb className="h-5 w-5 text-amber-300" />
+                                    </div>
+                                    <Badge
+                                      variant="secondary"
+                                      className="bg-amber-500/10 text-amber-200 border-amber-400/30 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                                    >
+                                      Idea {index + 1}
+                                    </Badge>
+                                  </div>
+                                  <CardTitle className="text-lg font-bold text-white leading-snug">
+                                    {idea.title}
+                                  </CardTitle>
+                                </CardHeader>
+                                <CardContent className="p-6 pt-0 flex flex-col flex-1 space-y-4">
+                                  {idea.hook && (
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-1">
+                                        Hook
+                                      </p>
+                                      <p className="text-sm text-gray-300 leading-relaxed">
+                                        {idea.hook}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {idea.angle && (
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-1">
+                                        Your angle
+                                      </p>
+                                      <p className="text-sm text-gray-300 leading-relaxed">
+                                        {idea.angle}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {idea.why_it_works && (
+                                    <div>
+                                      <p className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-1">
+                                        Why it works
+                                      </p>
+                                      <p className="text-sm text-gray-400 leading-relaxed">
+                                        {idea.why_it_works}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {idea.inspired_by.length > 0 && (
+                                    <div className="pt-2 border-t border-white/5 mt-auto">
+                                      <p className="text-xs uppercase tracking-wider text-gray-500 font-semibold mb-2">
+                                        Inspired by
+                                      </p>
+                                      <ul className="space-y-2">
+                                        {idea.inspired_by.map((ref) => {
+                                          const key = `${ref.video_id}-${ref.video_title}`;
+                                          const label = ref.channel_title
+                                            ? `${ref.channel_title}: ${ref.video_title}`
+                                            : ref.video_title;
+                                          if (ref.url) {
+                                            return (
+                                              <li key={key}>
+                                                <a
+                                                  href={ref.url}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="text-xs text-blue-300 hover:text-blue-200 transition-colors inline-flex items-start gap-1.5"
+                                                >
+                                                  <ExternalLink className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                                  <span>{label}</span>
+                                                </a>
+                                              </li>
+                                            );
+                                          }
+                                          return (
+                                            <li key={key} className="text-xs text-gray-400">
+                                              {label}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </div>
+                        )}
+
+                        {!ideasLoading && !ideasError && ideas.length === 0 && (
+                          <p className="text-sm text-gray-500">
+                            No ideas yet. Hit refresh once competitors are ready.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
