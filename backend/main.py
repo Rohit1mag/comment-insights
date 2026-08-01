@@ -2375,13 +2375,17 @@ def _competitor_video_packages(rows: Optional[List[Dict]]) -> List[CompetitorVid
 
 
 def _enforce_profile_throttle(email: str) -> None:
-    """Cap uncached profile runs per account.
+    """Cap uncached profile/ideas runs per account.
 
     A single computation costs ~600 of the 10,000 daily YouTube units, so one
     user must not be able to drain the key for everyone. Tracked in Postgres
     (not the /tmp JSON used for analyses) because /tmp is per-instance on
     Vercel and this limit protects a shared, global resource.
+
+    UNLIMITED tier accounts (see USER_TIERS) skip the cap.
     """
+    if TIER_LIMITS.get(USER_TIERS.get(email, DEFAULT_TIER), 0) == -1:
+        return
     if not db.configured():
         return
     try:
