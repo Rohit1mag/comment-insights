@@ -23,6 +23,12 @@ from io import BytesIO
 
 # Import from local module (same directory)
 import db
+import channel_insights
+from channel_insights import (
+    ChannelInsightsError,
+    ChannelNotFoundError,
+    YouTubeQuotaError,
+)
 from fetch_comments import get_youtube_service, get_video_comments, get_video_details
 from clerk_auth import ClerkAuthError, clerk_configured, email_from_session_token
 from together import Together
@@ -113,6 +119,12 @@ GUEST_COOKIE_NAME = "disstill_guest_id"
 GUEST_ANALYSIS_LIMIT = 1
 GUEST_IP_LIMIT_24H = 3
 GUEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year
+
+# Uncached channel profiles per account per day. Each one spends ~600 of the
+# key's 10,000 daily YouTube units, so this is a shared-resource guard, not a
+# billing tier — see _enforce_profile_throttle.
+CHANNEL_PROFILE_RUNS_PER_DAY = 5
+CHANNEL_LLM_TIMEOUT_SECS = 60.0
 
 # Stripe configuration
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -716,6 +728,92 @@ class PDFRequest(BaseModel):
     summary: str
     sentiment: Dict[str, int]
     action_items: List[ActionItem]
+
+
+class ChannelResolveRequest(BaseModel):
+    # No min_length: blank input falls through to the resolver so the user gets
+    # the actionable "enter a channel URL" message instead of a 422 body.
+    input: str = Field(default="", max_length=500)
+
+
+class ChannelProfileRequest(BaseModel):
+    channel_input: Optional[str] = Field(default=None, max_length=500)
+    refresh: bool = False
+
+
+class ChannelSummary(BaseModel):
+    channel_id: str
+    title: str
+    handle: str = ""
+    description: str = ""
+    thumbnail: str = ""
+    subscriber_count: Optional[int] = None  # None when the creator hides it
+    video_count: int = 0
+    view_count: int = 0
+    published_at: str = ""
+    url: str = ""
+
+
+class SavedChannelResponse(BaseModel):
+    channel: Optional[ChannelSummary] = None
+
+
+class TopVideo(BaseModel):
+    video_id: str
+    title: str
+    published_at: str = ""
+    view_count: int = 0
+    like_count: int = 0
+    comment_count: int = 0
+    duration_seconds: int = 0
+    thumbnail: str = ""
+    url: str = ""
+
+
+class VibeProfile(BaseModel):
+    niche: str = ""
+    topics: List[str] = Field(default_factory=list)
+    format: str = ""
+    audience: str = ""
+    tone: str = ""
+    summary: str = ""
+    search_queries: List[str] = Field(default_factory=list)
+
+
+class CompetitorScoreComponents(BaseModel):
+    relevance: float = 0.0
+    size: float = 0.0
+    exposure: float = 0.0
+    activity: float = 0.0
+    queries_matched: int = 0
+    queries_total: int = 0
+    matched_views: int = 0
+
+
+class CompetitorChannel(BaseModel):
+    channel_id: str
+    title: str
+    handle: str = ""
+    description: str = ""
+    thumbnail: str = ""
+    subscriber_count: Optional[int] = None
+    video_count: int = 0
+    view_count: int = 0
+    url: str = ""
+    reason: str = ""
+    score: float = 0.0
+    score_components: CompetitorScoreComponents = Field(
+        default_factory=CompetitorScoreComponents
+    )
+
+
+class ChannelProfileResponse(BaseModel):
+    channel: ChannelSummary
+    top_videos: List[TopVideo] = Field(default_factory=list)
+    vibe: VibeProfile = Field(default_factory=VibeProfile)
+    competitors: List[CompetitorChannel] = Field(default_factory=list)
+    cached: bool = False
+    computed_at: Optional[str] = None
 
 
 def extract_video_id(url: str) -> str:
@@ -2127,6 +2225,269 @@ async def download_pdf_report(request: PDFRequest):
             status_code=500,
             detail=f"An error occurred generating PDF: {str(e)}"
         )
+
+
+def _channel_llm_json(prompt: str) -> Optional[Dict]:
+    """One strict-JSON LLM call for the channel profiler, or None on failure."""
+    try:
+        api_key = os.getenv("TOGETHER_API_KEY")
+        if not api_key:
+            raise ValueError("TOGETHER_API_KEY not set")
+        # These prompts are a fraction of the size of a comment batch, so they
+        # get a much shorter leash than LLM_TIMEOUT_SECS: a stalled connection
+        # here would otherwise hold the whole profile request open for minutes.
+        client = Together(
+            api_key=api_key, timeout=CHANNEL_LLM_TIMEOUT_SECS, max_retries=2
+        )
+        response = client.chat.completions.create(
+            **_insights_completion_kwargs(
+                messages=[{"role": "user", "content": prompt}],
+            )
+        )
+        return extract_json_object_from_llm(_extract_llm_text(response))
+    except Exception as exc:
+        print(f"channel profile LLM call failed: {type(exc).__name__}")
+        return None
+
+
+def _youtube_service():
+    """YouTube client, or a 503 the UI can explain (missing key is our fault)."""
+    try:
+        return get_youtube_service()
+    except ValueError:
+        raise HTTPException(
+            status_code=503, detail="YouTube search is not configured right now."
+        )
+
+
+def _channel_http_error(exc: ChannelInsightsError) -> HTTPException:
+    if isinstance(exc, ChannelNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, YouTubeQuotaError):
+        return HTTPException(status_code=503, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
+
+
+def _channel_summary(data: Dict) -> ChannelSummary:
+    return ChannelSummary(
+        channel_id=data.get("channel_id", ""),
+        title=data.get("title", ""),
+        handle=data.get("handle", "") or "",
+        description=data.get("description", "") or "",
+        thumbnail=data.get("thumbnail", "") or "",
+        subscriber_count=data.get("subscriber_count"),
+        video_count=data.get("video_count", 0) or 0,
+        view_count=data.get("view_count", 0) or 0,
+        published_at=data.get("published_at", "") or "",
+        url=data.get("url")
+        or channel_insights.channel_url(data.get("channel_id", ""), data.get("handle")),
+    )
+
+
+def _top_videos(rows: Optional[List[Dict]]) -> List[TopVideo]:
+    return [
+        TopVideo(**{k: v for k, v in row.items() if k in TopVideo.model_fields})
+        for row in rows or []
+    ]
+
+
+def _competitors(rows: Optional[List[Dict]]) -> List[CompetitorChannel]:
+    items: List[CompetitorChannel] = []
+    for row in rows or []:
+        fields = {k: v for k, v in row.items() if k in CompetitorChannel.model_fields}
+        fields["score_components"] = CompetitorScoreComponents(
+            **(row.get("score_components") or {})
+        )
+        items.append(CompetitorChannel(**fields))
+    return items
+
+
+def _enforce_profile_throttle(email: str) -> None:
+    """Cap uncached profile runs per account.
+
+    A single computation costs ~600 of the 10,000 daily YouTube units, so one
+    user must not be able to drain the key for everyone. Tracked in Postgres
+    (not the /tmp JSON used for analyses) because /tmp is per-instance on
+    Vercel and this limit protects a shared, global resource.
+    """
+    if not db.configured():
+        return
+    try:
+        used = db.count_channel_profile_runs(email)
+    except Exception as exc:
+        print(f"count_channel_profile_runs failed: {type(exc).__name__}")
+        return
+    if used >= CHANNEL_PROFILE_RUNS_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"You've refreshed {CHANNEL_PROFILE_RUNS_PER_DAY} channel profiles today. "
+                "Try again tomorrow."
+            ),
+        )
+
+
+def _saved_channel_summary(email: str) -> Optional[ChannelSummary]:
+    """The user's linked channel, enriched from the profile cache when possible."""
+    if not db.configured():
+        return None
+    try:
+        saved = db.get_user_channel(email)
+    except Exception as exc:
+        print(f"get_user_channel failed: {type(exc).__name__}")
+        return None
+    if not saved:
+        return None
+
+    channel_id = saved.get("channel_id", "")
+    try:
+        cached = db.get_channel_profile(channel_id)
+    except Exception as exc:
+        print(f"get_channel_profile failed: {type(exc).__name__}")
+        cached = None
+    if cached and cached.get("channel"):
+        return _channel_summary(cached["channel"])
+
+    return _channel_summary(
+        {
+            "channel_id": channel_id,
+            "title": saved.get("channel_title") or channel_id,
+            "handle": saved.get("handle") or "",
+        }
+    )
+
+
+@app.post("/channel/resolve")
+async def resolve_user_channel(request: Request, body: ChannelResolveRequest) -> ChannelSummary:
+    """Resolve a channel URL/@handle/id and link it to the signed-in account."""
+    email = require_verified_email(request)
+    youtube = _youtube_service()
+
+    try:
+        channel = await asyncio.to_thread(
+            channel_insights.resolve_channel, youtube, body.input
+        )
+    except ChannelInsightsError as exc:
+        raise _channel_http_error(exc)
+
+    if db.configured():
+        db.save_user_channel(
+            user_email=email,
+            channel_id=channel["channel_id"],
+            channel_title=channel.get("title"),
+            handle=channel.get("handle"),
+        )
+
+    return _channel_summary(channel)
+
+
+@app.get("/channel/me")
+async def get_my_channel(request: Request) -> SavedChannelResponse:
+    """The signed-in user's linked channel, or null when they haven't linked one."""
+    email = require_verified_email(request)
+    return SavedChannelResponse(channel=_saved_channel_summary(email))
+
+
+@app.post("/channel/profile")
+async def get_channel_profile(
+    request: Request, body: ChannelProfileRequest
+) -> ChannelProfileResponse:
+    """Channel vibe profile, top videos, and competitors — cached for a week.
+
+    Falls back to the user's linked channel when channel_input is omitted.
+    """
+    email = require_verified_email(request)
+    youtube = _youtube_service()
+
+    channel: Optional[Dict] = None
+    channel_id = ""
+    if body.channel_input:
+        try:
+            channel = await asyncio.to_thread(
+                channel_insights.resolve_channel, youtube, body.channel_input
+            )
+        except ChannelInsightsError as exc:
+            raise _channel_http_error(exc)
+        channel_id = channel["channel_id"]
+    else:
+        saved = None
+        if db.configured():
+            try:
+                saved = db.get_user_channel(email)
+            except Exception as exc:
+                print(f"get_user_channel failed: {type(exc).__name__}")
+        if not saved:
+            raise HTTPException(
+                status_code=400,
+                detail="Add your channel first so we can profile it.",
+            )
+        channel_id = saved["channel_id"]
+
+    cached = None
+    if db.configured() and not body.refresh:
+        try:
+            cached = db.get_channel_profile(channel_id)
+        except Exception as exc:
+            print(f"get_channel_profile failed: {type(exc).__name__}")
+            cached = None
+
+    if cached and channel_insights.profile_is_fresh(cached.get("computed_at")):
+        computed_at = cached.get("computed_at")
+        return ChannelProfileResponse(
+            channel=_channel_summary(cached.get("channel") or {}),
+            top_videos=_top_videos(cached.get("top_videos")),
+            vibe=VibeProfile(**(cached.get("profile") or {})),
+            competitors=_competitors(cached.get("competitors")),
+            cached=True,
+            computed_at=computed_at.isoformat() if computed_at else None,
+        )
+
+    _enforce_profile_throttle(email)
+
+    if channel is None:
+        try:
+            channel = await asyncio.to_thread(
+                channel_insights.resolve_channel, youtube, channel_id
+            )
+        except ChannelInsightsError as exc:
+            raise _channel_http_error(exc)
+
+    try:
+        result = await asyncio.to_thread(
+            channel_insights.compute_channel_profile, youtube, channel, _channel_llm_json
+        )
+    except ChannelInsightsError as exc:
+        raise _channel_http_error(exc)
+    except Exception as exc:
+        print(f"compute_channel_profile failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=500, detail="We couldn't build your channel profile. Please try again."
+        )
+
+    if db.configured():
+        db.save_user_channel(
+            user_email=email,
+            channel_id=channel["channel_id"],
+            channel_title=channel.get("title"),
+            handle=channel.get("handle"),
+        )
+        db.save_channel_profile(
+            channel_id=channel["channel_id"],
+            channel=channel,
+            top_videos=result["top_videos"],
+            profile=result["vibe"],
+            competitors=result["competitors"],
+        )
+        db.record_channel_profile_run(email, channel["channel_id"])
+
+    return ChannelProfileResponse(
+        channel=_channel_summary(channel),
+        top_videos=_top_videos(result["top_videos"]),
+        vibe=VibeProfile(**result["vibe"]),
+        competitors=_competitors(result["competitors"]),
+        cached=False,
+        computed_at=_utc_now_iso(),
+    )
 
 
 if __name__ == "__main__":

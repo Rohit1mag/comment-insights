@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Clock,
   History,
+  Lightbulb,
   Loader2,
   MessageSquare,
   Search,
@@ -272,6 +273,13 @@ export default function HistoryPage() {
                 >
                   <Search className="h-4 w-4" />
                   New analysis
+                </Link>
+                <Link
+                  href="/ideas"
+                  className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5"
+                >
+                  <Lightbulb className="h-4 w-4" />
+                  <span className="hidden sm:inline">Ideas</span>
                 </Link>
                 <UserButton
                   appearance={{

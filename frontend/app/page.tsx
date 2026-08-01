@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, TrendingUp, MessageSquare, CheckCircle2, History, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
+import { Search, TrendingUp, MessageSquare, CheckCircle2, History, Lightbulb, Loader2, Youtube, Sparkles, Zap } from "lucide-react";
 import {
   SignInButton,
   SignUpButton,
@@ -477,6 +477,13 @@ export default function Home() {
                 ) : (
                   <div className="text-xs text-gray-500">Loading...</div>
                 )}
+                <Link
+                  href="/ideas"
+                  className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5"
+                >
+                  <Lightbulb className="h-4 w-4" />
+                  <span className="hidden sm:inline">Ideas</span>
+                </Link>
                 <Link
                   href="/history"
                   className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-gray-300 hover:text-white transition-all cursor-pointer rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5"

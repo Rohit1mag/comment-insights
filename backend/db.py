@@ -246,6 +246,166 @@ def list_analyses(
     return _run(operation)
 
 
+def save_user_channel(
+    user_email: str,
+    channel_id: str,
+    channel_title: Optional[str],
+    handle: Optional[str],
+) -> bool:
+    """Link (or re-link) a YouTube channel to an account. Never raises."""
+    if not user_email or not channel_id:
+        return False
+
+    def operation(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into user_channels (user_email, channel_id, channel_title, handle)
+                values (%s, %s, %s, %s)
+                on conflict (user_email) do update set
+                    channel_id = excluded.channel_id,
+                    channel_title = excluded.channel_title,
+                    handle = excluded.handle,
+                    updated_at = now()
+                """,
+                (user_email, channel_id, channel_title, handle),
+            )
+            return True
+
+    try:
+        return _run(operation)
+    except Exception as exc:
+        print(f"save_user_channel failed: {type(exc).__name__}")
+        return False
+
+
+def get_user_channel(user_email: str) -> Optional[Dict]:
+    """The channel linked to an account, or None."""
+    if not user_email:
+        return None
+
+    def operation(conn):
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                select channel_id, channel_title, handle, linked_at, updated_at
+                from user_channels
+                where user_email = %s
+                """,
+                (user_email,),
+            )
+            row = cur.fetchone()
+            return _serialize_row(row) if row else None
+
+    return _run(operation)
+
+
+def get_channel_profile(channel_id: str) -> Optional[Dict]:
+    """The cached profile for a channel, with computed_at left as a datetime so
+    the caller can apply its own TTL."""
+    if not channel_id:
+        return None
+
+    def operation(conn):
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                select channel, top_videos, profile, competitors, computed_at
+                from channel_profiles
+                where channel_id = %s
+                """,
+                (channel_id,),
+            )
+            return cur.fetchone()
+
+    return _run(operation)
+
+
+def save_channel_profile(
+    channel_id: str,
+    channel: Dict,
+    top_videos: List[Dict],
+    profile: Dict,
+    competitors: List[Dict],
+) -> bool:
+    """Cache a computed profile. Never raises: a cache miss is cheaper than a
+    lost result."""
+    if not channel_id:
+        return False
+
+    def operation(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into channel_profiles (
+                    channel_id, channel, top_videos, profile, competitors, computed_at
+                )
+                values (%s, %s, %s, %s, %s, now())
+                on conflict (channel_id) do update set
+                    channel = excluded.channel,
+                    top_videos = excluded.top_videos,
+                    profile = excluded.profile,
+                    competitors = excluded.competitors,
+                    computed_at = now()
+                """,
+                (
+                    channel_id,
+                    Jsonb(_jsonable(channel or {})),
+                    Jsonb(_jsonable(top_videos or [])),
+                    Jsonb(_jsonable(profile or {})),
+                    Jsonb(_jsonable(competitors or [])),
+                ),
+            )
+            return True
+
+    try:
+        return _run(operation)
+    except Exception as exc:
+        print(f"save_channel_profile failed: {type(exc).__name__}")
+        return False
+
+
+def count_channel_profile_runs(user_email: str, within_hours: int = 24) -> int:
+    """How many uncached profile computations this account ran recently."""
+    if not user_email:
+        return 0
+
+    def operation(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select count(*)
+                from channel_profile_runs
+                where user_email = %s and created_at > now() - make_interval(hours => %s)
+                """,
+                (user_email, within_hours),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+    return _run(operation)
+
+
+def record_channel_profile_run(user_email: str, channel_id: str) -> bool:
+    """Log one quota-spending computation against an account. Never raises."""
+    if not user_email or not channel_id:
+        return False
+
+    def operation(conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into channel_profile_runs (user_email, channel_id) values (%s, %s)",
+                (user_email, channel_id),
+            )
+            return True
+
+    try:
+        return _run(operation)
+    except Exception as exc:
+        print(f"record_channel_profile_run failed: {type(exc).__name__}")
+        return False
+
+
 def get_analysis(analysis_id: str, user_email: str) -> Optional[Dict]:
     """Return one full analysis owned by user_email, or None.
 
