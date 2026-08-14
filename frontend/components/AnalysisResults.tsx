@@ -131,94 +131,86 @@ export default function AnalysisResults({
     .filter((p) => p.trim());
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-12 animate-in-1">
-        <div className="flex flex-wrap items-center gap-3 mb-6">
-          <Button
-            onClick={onNewAnalysis}
-            className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-gray-300 hover:text-white transition-all duration-300 rounded-xl px-5 py-2.5"
-          >
+    <div className="mx-auto max-w-5xl">
+      <div className="mb-10 animate-in-1">
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <Button onClick={onNewAnalysis} variant="outline" size="sm">
             <ArrowLeft className="mr-2 h-4 w-4" />
             {backLabel}
           </Button>
           <Button
             onClick={handleDownloadPDF}
             disabled={isDownloading || isStreaming || !data.summary}
-            className="glass border-white/10 hover:border-white/20 hover:bg-white/5 text-white bg-gradient-to-r from-blue-500/20 to-purple-500/20 hover:from-blue-500/30 hover:to-purple-500/30 transition-all duration-300 rounded-xl px-6 py-2.5 font-medium"
+            variant="outline"
+            size="sm"
           >
             <Download className="mr-2 h-4 w-4" />
-            {isDownloading ? "Generating PDF..." : "Download PDF Report"}
+            {isDownloading ? "Generating PDF…" : "Download PDF"}
           </Button>
         </div>
-        <h2
-          className="text-5xl font-bold mb-4 gradient-text"
-          style={{
-            backgroundImage: "linear-gradient(135deg, hsl(210 100% 60%), hsl(265 85% 65%))",
-            backgroundSize: "200% 200%",
-            animation: "gradient-shift 3s ease infinite",
-          }}
-        >
-          Analysis Results
+        <h2 className="gradient-text mb-3 text-4xl font-bold tracking-tight sm:text-5xl">
+          Analysis results
         </h2>
-        <p className="text-gray-400 text-lg">
+        <p className="text-base text-muted-foreground sm:text-lg">
           Analyzed {totalCount} comments from your video
           {isStreaming ? " · generating insights…" : ""}
         </p>
-        {title && <p className="text-gray-300 text-base mt-2 font-medium">{title}</p>}
+        {title ? <p className="mt-2 font-medium text-white/80">{title}</p> : null}
       </div>
 
-      {/* Action Items */}
-      <Card className="mb-12 glass border-white/10 rounded-3xl overflow-hidden animate-in-2">
-        <CardHeader className="p-8 border-b border-white/5">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center">
-              <CheckCircle2 className="h-7 w-7 text-blue-400" />
+      <Card className="mb-8 animate-in-2 overflow-hidden">
+        <CardHeader className="border-b border-white/[0.06]">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20">
+              <CheckCircle2 className="h-5 w-5 text-blue-400" />
             </div>
             <div>
-              <CardTitle className="text-2xl font-bold mb-1">Top Recommendations</CardTitle>
-              <CardDescription className="text-gray-400">
+              <CardTitle className="mb-1">Top recommendations</CardTitle>
+              <CardDescription>
                 Prioritized action items based on audience feedback
               </CardDescription>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="p-8">
-          <div className="space-y-4">
+        <CardContent className="pt-5">
+          <div className="space-y-2">
             {data.action_items && data.action_items.length > 0 ? (
               data.action_items.map((item, index) => (
                 <div
                   key={index}
-                  className="flex items-start gap-4 p-6 bg-white/5 rounded-2xl border border-white/5 hover:border-blue-400/30 hover:bg-white/8 transition-all duration-300"
+                  className="flex items-start gap-4 rounded-xl border border-transparent p-4 transition-colors hover:border-white/10 hover:bg-white/[0.04]"
                 >
-                  <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 text-blue-300 font-bold flex-shrink-0 text-lg">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/5 text-sm font-semibold tabular-nums text-blue-300">
                     {index + 1}
                   </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h4 className="font-semibold text-white text-lg">{item.title}</h4>
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <h4 className="font-medium text-white">{item.title}</h4>
                       <Badge
-                        className={`font-medium rounded-full ${
+                        className={
                           item.impact === "High"
-                            ? "bg-red-500/20 text-red-300 border-red-400/40"
+                            ? "border-red-400/30 bg-red-500/10 text-red-200"
                             : item.impact === "Medium"
-                              ? "bg-yellow-500/20 text-yellow-300 border-yellow-400/40"
-                              : "bg-green-500/20 text-green-300 border-green-400/40"
-                        }`}
+                              ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
+                              : "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                        }
                       >
-                        {item.impact} Impact
+                        {item.impact} impact
                       </Badge>
                     </div>
-                    <p className="text-sm text-gray-400 leading-relaxed">{item.description}</p>
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      {item.description}
+                    </p>
                   </div>
                 </div>
               ))
             ) : isStreaming ? (
-              <div className="flex items-center gap-3 text-gray-400 py-6 justify-center">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
-                <span>Finding high-quality recommendations…</span>
+              <div className="flex items-center justify-center gap-3 py-8 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+                <span className="text-sm">Finding high-quality recommendations…</span>
               </div>
             ) : (
-              <p className="text-sm text-gray-500 text-center py-8">
+              <p className="py-8 text-center text-sm text-white/40">
                 No specific action items identified from the comments.
               </p>
             )}
@@ -226,25 +218,24 @@ export default function AnalysisResults({
         </CardContent>
       </Card>
 
-      <div className="grid md:grid-cols-2 gap-8 mb-12">
-        {/* Summary */}
-        <Card className="glass border-white/10 rounded-3xl overflow-hidden animate-in-3">
-          <CardHeader className="p-8 border-b border-white/5">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center">
-                <MessageSquare className="h-7 w-7 text-purple-400" />
+      <div className="mb-8 grid gap-4 md:grid-cols-2">
+        <Card className="animate-in-3 overflow-hidden">
+          <CardHeader className="border-b border-white/[0.06]">
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20">
+                <MessageSquare className="h-5 w-5 text-violet-400" />
               </div>
               <div>
-                <CardTitle className="text-2xl font-bold">Summary</CardTitle>
-                <CardDescription className="text-gray-400">
+                <CardTitle>Summary</CardTitle>
+                <CardDescription>
                   AI analysis of comments
                   {summaryStreaming ? " · streaming…" : ""}
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
-          <CardContent className="p-8">
-            <div className="space-y-4">
+          <CardContent className="pt-5">
+            <div className="space-y-3">
               {summaryParagraphs.length > 0 ? (
                 summaryParagraphs.map((paragraph, index) => {
                   const headingMatch = paragraph.match(/^\*\*(.*?):\*\*/);
@@ -256,13 +247,13 @@ export default function AnalysisResults({
                     return (
                       <div
                         key={index}
-                        className="p-5 border-l-4 border-blue-400 bg-blue-500/10 rounded-r-xl"
+                        className="rounded-r-xl border-l-2 border-blue-400 bg-blue-500/10 p-4"
                       >
-                        <h4 className="font-semibold text-base mb-2 text-blue-300 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-blue-400 rounded-full flex-shrink-0"></div>
+                        <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-blue-200">
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400" />
                           {headingText}
                         </h4>
-                        <p className="text-sm leading-relaxed text-gray-300">{content}</p>
+                        <p className="text-sm leading-relaxed text-white/75">{content}</p>
                       </div>
                     );
                   }
@@ -272,9 +263,9 @@ export default function AnalysisResults({
                   return (
                     <div
                       key={index}
-                      className="p-5 bg-white/5 rounded-2xl border border-white/5 hover:border-white/10 hover:bg-white/8 transition-all duration-300"
+                      className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-4"
                     >
-                      <p className="text-sm leading-relaxed text-gray-300">
+                      <p className="text-sm leading-relaxed text-white/75">
                         {parts.map((part, i) => {
                           if (part.startsWith("**") && part.endsWith("**")) {
                             return (
@@ -285,42 +276,41 @@ export default function AnalysisResults({
                           }
                           return <span key={i}>{part}</span>;
                         })}
-                        {summaryStreaming && index === summaryParagraphs.length - 1 && (
-                          <span className="inline-block w-1.5 h-4 ml-0.5 bg-blue-400 animate-pulse align-middle" />
-                        )}
+                        {summaryStreaming && index === summaryParagraphs.length - 1 ? (
+                          <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse align-middle bg-blue-400" />
+                        ) : null}
                       </p>
                     </div>
                   );
                 })
               ) : (
-                <div className="flex items-center gap-3 text-gray-400 py-8 justify-center">
-                  <Loader2 className="h-5 w-5 animate-spin text-purple-400" />
-                  <span>Writing summary…</span>
+                <div className="flex items-center justify-center gap-3 py-10 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-violet-400" />
+                  <span className="text-sm">Writing summary…</span>
                 </div>
               )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Sentiment Breakdown */}
-        <Card className="glass border-white/10 rounded-3xl overflow-hidden animate-in-4">
-          <CardHeader className="p-8 border-b border-white/5">
-            <CardTitle className="text-2xl font-bold">Sentiment Breakdown</CardTitle>
-            <CardDescription className="text-gray-400">Overall audience mood</CardDescription>
+        <Card className="animate-in-4 overflow-hidden">
+          <CardHeader className="border-b border-white/[0.06]">
+            <CardTitle>Sentiment breakdown</CardTitle>
+            <CardDescription>Overall audience mood</CardDescription>
           </CardHeader>
-          <CardContent className="p-8">
-            <div className="h-72">
+          <CardContent className="pt-5">
+            <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={chartData}
                     cx="50%"
                     cy="50%"
-                    innerRadius={65}
-                    outerRadius={100}
-                    paddingAngle={4}
+                    innerRadius={58}
+                    outerRadius={88}
+                    paddingAngle={3}
                     dataKey="value"
-                    stroke="rgba(255,255,255,0.1)"
+                    stroke="rgba(255,255,255,0.08)"
                     strokeWidth={2}
                   >
                     {chartData.map((entry, index) => (
@@ -329,12 +319,11 @@ export default function AnalysisResults({
                   </Pie>
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: "rgba(10, 15, 26, 0.95)",
-                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                      backgroundColor: "rgba(11, 18, 32, 0.95)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
                       borderRadius: "12px",
-                      padding: "12px",
+                      padding: "10px 12px",
                       color: "#fff",
-                      backdropFilter: "blur(20px)",
                     }}
                     formatter={(value: any, name: string) => {
                       const total =
@@ -344,46 +333,34 @@ export default function AnalysisResults({
                       const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
                       return [`${value} (${percentage}%)`, name];
                     }}
-                    labelStyle={{
-                      color: "#fff",
-                      fontWeight: "600",
-                      marginBottom: "4px",
-                    }}
-                    itemStyle={{
-                      color: "#fff",
-                      fontWeight: "500",
-                    }}
+                    labelStyle={{ color: "#fff", fontWeight: "600", marginBottom: "4px" }}
+                    itemStyle={{ color: "#fff", fontWeight: "500" }}
                   />
-                  <Legend
-                    wrapperStyle={{
-                      fontSize: "0.9rem",
-                      fontWeight: "500",
-                    }}
-                  />
+                  <Legend wrapperStyle={{ fontSize: "0.8rem", fontWeight: "500" }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="grid grid-cols-3 gap-4 mt-8">
-              <div className="text-center p-4 bg-white/5 rounded-2xl border border-white/5">
-                <div className="flex items-center justify-center gap-2 text-blue-400 font-bold mb-2">
-                  <TrendingUp className="h-5 w-5" />
-                  <span className="text-2xl">{data.sentiment.positive}</span>
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-blue-400">
+                  <TrendingUp className="h-4 w-4" />
+                  <span className="text-xl">{data.sentiment.positive}</span>
                 </div>
-                <p className="text-sm text-gray-400 font-medium">Positive</p>
+                <p className="text-xs text-muted-foreground">Positive</p>
               </div>
-              <div className="text-center p-4 bg-white/5 rounded-2xl border border-white/5">
-                <div className="flex items-center justify-center gap-2 text-purple-400 font-bold mb-2">
-                  <Minus className="h-5 w-5" />
-                  <span className="text-2xl">{data.sentiment.neutral}</span>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-violet-400">
+                  <Minus className="h-4 w-4" />
+                  <span className="text-xl">{data.sentiment.neutral}</span>
                 </div>
-                <p className="text-sm text-gray-400 font-medium">Neutral</p>
+                <p className="text-xs text-muted-foreground">Neutral</p>
               </div>
-              <div className="text-center p-4 bg-white/5 rounded-2xl border border-white/5">
-                <div className="flex items-center justify-center gap-2 text-pink-400 font-bold mb-2">
-                  <TrendingDown className="h-5 w-5" />
-                  <span className="text-2xl">{data.sentiment.negative}</span>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-pink-400">
+                  <TrendingDown className="h-4 w-4" />
+                  <span className="text-xl">{data.sentiment.negative}</span>
                 </div>
-                <p className="text-sm text-gray-400 font-medium">Negative</p>
+                <p className="text-xs text-muted-foreground">Negative</p>
               </div>
             </div>
           </CardContent>

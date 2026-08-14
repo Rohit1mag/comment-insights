@@ -15,10 +15,11 @@ The LLM is injected as a callable so this module stays free of Together/FastAPI
 imports and can be reused by later steps of the feature.
 """
 
+import json
 import math
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, urlparse
 
 from googleapiclient.errors import HttpError
@@ -881,6 +882,91 @@ Rules:
 - No hashtags, no emoji spam, no "Part 1" without a reason"""
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Best-effort strip of ``` / ```json fences from partial or full LLM text."""
+    t = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", t, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return t
+
+
+def extract_closed_array_objects(text: str, array_key: str = "ideas") -> List[Dict]:
+    """Return fully-closed JSON objects found so far inside `array_key`.
+
+    Safe on partial streams: objects are only returned once their closing `}`
+    has arrived. Incomplete trailing objects are ignored.
+    """
+    if not text:
+        return []
+    t = _strip_markdown_fences(text)
+    key_match = re.search(
+        rf'"{re.escape(array_key)}"\s*:\s*\[', t, re.IGNORECASE
+    )
+    if not key_match:
+        return []
+
+    i = key_match.end()
+    objects: List[Dict] = []
+    n = len(t)
+
+    while i < n and len(objects) < IDEA_COUNT:
+        while i < n and t[i] in " \t\r\n,":
+            i += 1
+        if i >= n:
+            break
+        if t[i] == "]":
+            break
+        if t[i] != "{":
+            # Unexpected token — bail rather than mis-parse.
+            break
+
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        closed = False
+        while i < n:
+            ch = t[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed = True
+                        i += 1
+                        break
+            i += 1
+
+        if not closed:
+            break
+        try:
+            obj = json.loads(t[start:i])
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            objects.append(obj)
+
+    return objects
+
+
 def coerce_ideas(payload: Optional[Dict], competitor_packages: List[Dict]) -> List[Dict]:
     """Normalize LLM ideas; drop junk and pad nothing — fewer than 3 is ok."""
     data = payload or {}
@@ -948,6 +1034,67 @@ def coerce_ideas(payload: Optional[Dict], competitor_packages: List[Dict]) -> Li
             }
         )
     return ideas
+
+
+def iter_streamed_ideas(
+    channel: Dict,
+    vibe: Dict,
+    user_top_videos: List[Dict],
+    competitor_packages: List[Dict],
+    llm_text_stream: Callable[[str], Iterable[str]],
+) -> Iterator[Tuple[str, Union[Dict, List[Dict]]]]:
+    """Stream coerced ideas as each object closes in the LLM JSON.
+
+    Yields:
+      ("idea", idea_dict) — one complete idea ready for the UI
+      ("done", ideas_list) — final list (may use fallbacks if LLM failed)
+    """
+    prompt = build_ideas_prompt(channel, vibe, user_top_videos, competitor_packages)
+    buffer = ""
+    emitted = 0
+    ideas: List[Dict] = []
+
+    for delta in llm_text_stream(prompt):
+        if not delta:
+            continue
+        buffer += delta
+        closed = extract_closed_array_objects(buffer, "ideas")
+        while emitted < len(closed) and emitted < IDEA_COUNT:
+            coerced = coerce_ideas({"ideas": [closed[emitted]]}, competitor_packages)
+            emitted += 1
+            if not coerced:
+                continue
+            idea = coerced[0]
+            ideas.append(idea)
+            yield ("idea", idea)
+
+        if len(ideas) >= IDEA_COUNT:
+            break
+
+    if len(ideas) < IDEA_COUNT and buffer:
+        # Final reconciliation in case trailing whitespace / fence delayed a parse.
+        try:
+            payload = json.loads(_strip_markdown_fences(buffer))
+        except json.JSONDecodeError:
+            payload = None
+            start = buffer.find("{")
+            end = buffer.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    payload = json.loads(buffer[start : end + 1])
+                except json.JSONDecodeError:
+                    payload = None
+        final = coerce_ideas(payload if isinstance(payload, dict) else None, competitor_packages)
+        for idea in final[len(ideas) :]:
+            ideas.append(idea)
+            yield ("idea", idea)
+
+    if not ideas:
+        ideas = _fallback_ideas(channel, vibe, competitor_packages)
+        for idea in ideas:
+            yield ("idea", idea)
+
+    yield ("done", ideas)
 
 
 def _fallback_ideas(

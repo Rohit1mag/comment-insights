@@ -2284,6 +2284,26 @@ def _channel_llm_json(prompt: str) -> Optional[Dict]:
         return None
 
 
+def _channel_llm_text_stream(prompt: str):
+    """Yield text deltas from a streaming channel-ideas LLM call."""
+    api_key = os.getenv("TOGETHER_API_KEY")
+    if not api_key:
+        raise ValueError("TOGETHER_API_KEY not set")
+    client = Together(
+        api_key=api_key, timeout=CHANNEL_LLM_TIMEOUT_SECS, max_retries=2
+    )
+    stream = client.chat.completions.create(
+        **_insights_completion_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        )
+    )
+    for chunk in stream:
+        delta = _stream_delta_text(chunk)
+        if delta:
+            yield delta
+
+
 def _youtube_service():
     """YouTube client, or a 503 the UI can explain (missing key is our fault)."""
     try:
@@ -2566,17 +2586,12 @@ async def get_channel_profile(
     )
 
 
-@app.post("/channel/ideas")
-async def get_channel_ideas(
-    request: Request, body: ChannelIdeasRequest
-) -> ChannelIdeasResponse:
-    """Recommend 3 video ideas from each competitor's top 10 videos.
+def _load_ideas_context(email: str, refresh: bool):
+    """Shared auth/cache setup for /channel/ideas and /channel/ideas/stream.
 
-    Requires a fresh step-1 profile (channel + competitors) already cached for
-    the signed-in user's linked channel.
+    Returns either a cached ChannelIdeasResponse (caller short-circuits) or a
+    dict with everything needed to compute fresh ideas.
     """
-    email = require_verified_email(request)
-
     if not db.configured():
         raise HTTPException(
             status_code=503,
@@ -2607,7 +2622,7 @@ async def get_channel_ideas(
             detail="Profile your channel first so we know your vibe and competitors.",
         )
 
-    if not body.refresh and channel_insights.profile_is_fresh(
+    if not refresh and channel_insights.profile_is_fresh(
         cached.get("ideas_computed_at")
     ):
         computed_at = cached.get("ideas_computed_at")
@@ -2625,17 +2640,41 @@ async def get_channel_ideas(
             detail="We need at least one competitor before we can recommend ideas.",
         )
 
-    _enforce_profile_throttle(email)
+    return {
+        "email": email,
+        "channel_id": channel_id,
+        "channel": cached.get("channel") or {},
+        "profile": cached.get("profile") or {},
+        "top_videos": cached.get("top_videos") or [],
+        "competitors": competitors,
+    }
+
+
+@app.post("/channel/ideas")
+async def get_channel_ideas(
+    request: Request, body: ChannelIdeasRequest
+) -> ChannelIdeasResponse:
+    """Recommend 3 video ideas from each competitor's top 10 videos.
+
+    Requires a fresh step-1 profile (channel + competitors) already cached for
+    the signed-in user's linked channel. Prefer /channel/ideas/stream for UI.
+    """
+    email = require_verified_email(request)
+    ctx = _load_ideas_context(email, body.refresh)
+    if isinstance(ctx, ChannelIdeasResponse):
+        return ctx
+
+    _enforce_profile_throttle(ctx["email"])
     youtube = _youtube_service()
 
     try:
         result = await asyncio.to_thread(
             channel_insights.compute_video_ideas,
             youtube,
-            cached.get("channel") or {},
-            cached.get("profile") or {},
-            cached.get("top_videos") or [],
-            competitors,
+            ctx["channel"],
+            ctx["profile"],
+            ctx["top_videos"],
+            ctx["competitors"],
             _channel_llm_json,
         )
     except ChannelInsightsError as exc:
@@ -2648,17 +2687,210 @@ async def get_channel_ideas(
         )
 
     db.save_channel_ideas(
-        channel_id=channel_id,
+        channel_id=ctx["channel_id"],
         ideas=result["ideas"],
         competitor_videos=result["competitor_videos"],
     )
-    db.record_channel_profile_run(email, channel_id)
+    db.record_channel_profile_run(ctx["email"], ctx["channel_id"])
 
     return ChannelIdeasResponse(
         ideas=_video_ideas(result["ideas"]),
         competitor_videos=_competitor_video_packages(result["competitor_videos"]),
         cached=False,
         computed_at=_utc_now_iso(),
+    )
+
+
+@app.post("/channel/ideas/stream")
+async def get_channel_ideas_stream(request: Request, body: ChannelIdeasRequest):
+    """Stream video ideas via SSE: status → idea → idea → … → done.
+
+    Cached hits emit all ideas immediately then done. Fresh runs emit status
+    while fetching competitor videos, then each idea as the LLM finishes it.
+    """
+    email = require_verified_email(request)
+    ctx = _load_ideas_context(email, body.refresh)
+
+    if isinstance(ctx, ChannelIdeasResponse):
+
+        async def cached_gen():
+            yield _sse(
+                "status",
+                {"stage": "cached", "message": "Loading saved ideas…"},
+            )
+            await asyncio.sleep(0)
+            for index, idea in enumerate(ctx.ideas):
+                yield _sse(
+                    "idea",
+                    {
+                        "index": index,
+                        "idea": idea.model_dump()
+                        if hasattr(idea, "model_dump")
+                        else idea.dict(),
+                    },
+                )
+                await asyncio.sleep(0)
+            yield _sse(
+                "done",
+                {
+                    "ok": True,
+                    "cached": True,
+                    "computed_at": ctx.computed_at,
+                },
+            )
+
+        return StreamingResponse(
+            cached_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    _enforce_profile_throttle(ctx["email"])
+    youtube = _youtube_service()
+
+    async def event_gen():
+        try:
+            yield _sse(
+                "status",
+                {
+                    "stage": "competitors",
+                    "message": "Studying competitor hits…",
+                },
+            )
+            await asyncio.sleep(0)
+            yield f":{' ' * 2048}\n\n"
+            await asyncio.sleep(0)
+
+            try:
+                competitor_packages = await asyncio.to_thread(
+                    channel_insights.fetch_competitor_top_videos,
+                    youtube,
+                    ctx["competitors"],
+                )
+            except ChannelInsightsError as exc:
+                err = _channel_http_error(exc)
+                yield _sse("error", {"detail": err.detail})
+                return
+            except Exception as exc:
+                print(f"fetch_competitor_top_videos failed: {type(exc).__name__}: {exc}")
+                yield _sse(
+                    "error",
+                    {"detail": "We couldn't load competitor videos. Please try again."},
+                )
+                return
+
+            yield _sse(
+                "status",
+                {
+                    "stage": "writing",
+                    "message": "Writing ideas for your channel…",
+                },
+            )
+            await asyncio.sleep(0)
+
+            queue: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def run_stream():
+                try:
+                    for item in channel_insights.iter_streamed_ideas(
+                        ctx["channel"],
+                        ctx["profile"],
+                        ctx["top_videos"],
+                        competitor_packages,
+                        _channel_llm_text_stream,
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, item)
+                except Exception as exc:
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait, ("error", str(exc))
+                    )
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            loop.run_in_executor(None, run_stream)
+
+            final_ideas: List[Dict] = []
+            idea_index = 0
+
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                kind = item[0]
+                if kind == "idea":
+                    idea = item[1]
+                    if not isinstance(idea, dict):
+                        continue
+                    final_ideas.append(idea)
+                    modeled = _video_ideas([idea])
+                    payload = (
+                        modeled[0].model_dump()
+                        if modeled
+                        else idea
+                    )
+                    yield _sse(
+                        "idea",
+                        {"index": idea_index, "idea": payload},
+                    )
+                    idea_index += 1
+                    await asyncio.sleep(0)
+                elif kind == "done":
+                    if isinstance(item[1], list):
+                        final_ideas = item[1]
+                elif kind == "error":
+                    yield _sse(
+                        "error",
+                        {
+                            "detail": item[1]
+                            or "We couldn't generate video ideas. Please try again.",
+                        },
+                    )
+                    return
+
+            if not final_ideas:
+                yield _sse(
+                    "error",
+                    {"detail": "We couldn't generate video ideas. Please try again."},
+                )
+                return
+
+            db.save_channel_ideas(
+                channel_id=ctx["channel_id"],
+                ideas=final_ideas,
+                competitor_videos=competitor_packages,
+            )
+            db.record_channel_profile_run(ctx["email"], ctx["channel_id"])
+
+            yield _sse(
+                "done",
+                {
+                    "ok": True,
+                    "cached": False,
+                    "computed_at": _utc_now_iso(),
+                },
+            )
+        except Exception as e:
+            import traceback
+
+            print(f"Error streaming channel ideas: {traceback.format_exc()}")
+            yield _sse(
+                "error",
+                {"detail": "We couldn't generate video ideas. Please try again."},
+            )
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
