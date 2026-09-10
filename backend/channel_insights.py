@@ -967,6 +967,93 @@ def extract_closed_array_objects(text: str, array_key: str = "ideas") -> List[Di
     return objects
 
 
+_IDEA_STRING_FIELDS = ("title", "hook", "angle", "why_it_works")
+_COMPLETE_FIELD_RE = re.compile(
+    r'"(title|hook|angle|why_it_works)"\s*:\s*"((?:[^"\\]|\\.)*)"'
+)
+_OPEN_FIELD_RE = re.compile(
+    r'"(title|hook|angle|why_it_works)"\s*:\s*"((?:[^"\\]|\\.)*)\Z'
+)
+
+
+def _unescape_json_string(value: str) -> str:
+    try:
+        parsed = json.loads(f'"{value}"')
+    except json.JSONDecodeError:
+        return value.replace('\\"', '"').replace("\\n", "\n").replace("\\\\", "\\")
+    return parsed if isinstance(parsed, str) else value
+
+
+def extract_open_idea_fields(text: str, array_key: str = "ideas") -> Optional[Dict]:
+    """Return in-progress string fields of the last unclosed idea object.
+
+    Used to stream a draft card before the JSON object closes. Returns
+    {"index": n, "idea": {field: value, ...}} or None.
+    """
+    if not text:
+        return None
+    t = _strip_markdown_fences(text)
+    key_match = re.search(rf'"{re.escape(array_key)}"\s*:\s*\[', t, re.IGNORECASE)
+    if not key_match:
+        return None
+
+    i = key_match.end()
+    n = len(t)
+    closed_count = 0
+
+    while i < n:
+        while i < n and t[i] in " \t\r\n,":
+            i += 1
+        if i >= n or t[i] == "]" or t[i] != "{":
+            return None
+
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        closed = False
+        j = i
+        while j < n:
+            ch = t[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed = True
+                        j += 1
+                        break
+            j += 1
+
+        if closed:
+            closed_count += 1
+            i = j
+            continue
+
+        fragment = t[start:j]
+        fields: Dict[str, str] = {}
+        for match in _COMPLETE_FIELD_RE.finditer(fragment):
+            fields[match.group(1)] = _unescape_json_string(match.group(2))
+        trail = _OPEN_FIELD_RE.search(fragment)
+        if trail:
+            fields[trail.group(1)] = _unescape_json_string(trail.group(2))
+        if not any(fields.get(key) for key in _IDEA_STRING_FIELDS):
+            return None
+        return {"index": closed_count, "idea": fields}
+
+    return None
+
+
 def coerce_ideas(payload: Optional[Dict], competitor_packages: List[Dict]) -> List[Dict]:
     """Normalize LLM ideas; drop junk and pad nothing — fewer than 3 is ok."""
     data = payload or {}
@@ -1046,6 +1133,7 @@ def iter_streamed_ideas(
     """Stream coerced ideas as each object closes in the LLM JSON.
 
     Yields:
+      ("idea_partial", {"index": n, "idea": fields}) — draft fields of the open idea
       ("idea", idea_dict) — one complete idea ready for the UI
       ("done", ideas_list) — final list (may use fallbacks if LLM failed)
     """
@@ -1053,6 +1141,7 @@ def iter_streamed_ideas(
     buffer = ""
     emitted = 0
     ideas: List[Dict] = []
+    last_partial: Optional[Dict] = None
 
     for delta in llm_text_stream(prompt):
         if not delta:
@@ -1066,10 +1155,21 @@ def iter_streamed_ideas(
                 continue
             idea = coerced[0]
             ideas.append(idea)
+            last_partial = None
             yield ("idea", idea)
 
         if len(ideas) >= IDEA_COUNT:
             break
+
+        partial = extract_open_idea_fields(buffer)
+        if (
+            partial
+            and isinstance(partial.get("index"), int)
+            and partial["index"] == len(ideas)
+            and partial != last_partial
+        ):
+            last_partial = partial
+            yield ("idea_partial", partial)
 
     if len(ideas) < IDEA_COUNT and buffer:
         # Final reconciliation in case trailing whitespace / fence delayed a parse.

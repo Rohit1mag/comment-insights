@@ -18,6 +18,7 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { useState } from "react";
 import { getApiUrl } from "@/lib/api";
+import { parseBriefSections } from "@/lib/brief";
 import type { AnalysisData } from "@/lib/types";
 
 interface AnalysisResultsProps {
@@ -125,9 +126,7 @@ export default function AnalysisResults({
     }
   };
 
-  const summaryParagraphs = (data.summary || "")
-    .split("\n\n")
-    .filter((p) => p.trim());
+  const briefSections = parseBriefSections(data.summary || "");
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -238,154 +237,154 @@ export default function AnalysisResults({
         </CardContent>
       </Card>
 
-      <div className="mb-8 grid gap-4 md:grid-cols-2">
-        <Card className="animate-in-3 overflow-hidden">
-          <CardHeader className="border-b border-white/[0.06]">
-            <div className="flex items-center gap-3.5">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
-                <MessageSquare className="h-5 w-5 text-amber-300" />
-              </div>
-              <div>
-                <CardTitle className="font-sans text-lg">Producer brief</CardTitle>
-                <CardDescription>
-                  What the section is actually saying
-                  {summaryStreaming ? " · streaming…" : ""}
-                </CardDescription>
-              </div>
+      <Card className="mb-8 animate-in-3 overflow-hidden">
+        <CardHeader className="border-b border-white/[0.06]">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+              <MessageSquare className="h-5 w-5 text-amber-300" />
             </div>
-          </CardHeader>
-          <CardContent className="pt-5">
-            <div className="space-y-3">
-              {summaryParagraphs.length > 0 ? (
-                summaryParagraphs.map((paragraph, index) => {
-                  const headingMatch = paragraph.match(/^\*\*(.*?):\*\*/);
+            <div>
+              <CardTitle className="font-sans text-lg">Producer brief</CardTitle>
+              <CardDescription>
+                Mood, what landed, what stalled, and the ask
+                {summaryStreaming ? " · streaming…" : ""}
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-5">
+          {briefSections.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {briefSections.map((section, index) => {
+                const isLast = index === briefSections.length - 1;
+                const showCursor = summaryStreaming && isLast;
+                const parts = section.content.split(/(\*\*.*?\*\*)/g);
 
-                  if (headingMatch) {
-                    const headingText = headingMatch[1];
-                    const content = paragraph.replace(/^\*\*.*?:\*\*\s*/, "").trim();
-
-                    return (
-                      <div
-                        key={index}
-                        className="rounded-r-xl border-l-2 border-amber-400 bg-amber-500/10 p-4"
-                      >
-                        <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-amber-100">
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
-                          {headingText}
-                        </h4>
-                        <p className="text-sm leading-relaxed text-white/75">{content}</p>
-                      </div>
-                    );
-                  }
-
-                  const parts = paragraph.split(/(\*\*.*?\*\*)/g);
-
+                if (section.heading) {
                   return (
                     <div
-                      key={index}
-                      className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-4"
+                      key={`${section.heading}-${index}`}
+                      className="rounded-r-xl border-l-2 border-amber-400 bg-amber-500/10 p-4"
                     >
+                      <h4 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-amber-100">
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                        {section.heading}
+                      </h4>
                       <p className="text-sm leading-relaxed text-white/75">
-                        {parts.map((part, i) => {
-                          if (part.startsWith("**") && part.endsWith("**")) {
-                            return (
-                              <strong key={i} className="font-semibold text-white">
-                                {part.slice(2, -2)}
-                              </strong>
-                            );
-                          }
-                          return <span key={i}>{part}</span>;
-                        })}
-                        {summaryStreaming && index === summaryParagraphs.length - 1 ? (
+                        {section.content}
+                        {showCursor ? (
                           <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse align-middle bg-amber-400" />
                         ) : null}
                       </p>
                     </div>
                   );
-                })
-              ) : (
-                <div className="flex items-center justify-center gap-3 py-10 text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
-                  <span className="text-sm">Writing the brief…</span>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                }
 
-        <Card className="animate-in-4 overflow-hidden">
-          <CardHeader className="border-b border-white/[0.06]">
-            <CardTitle className="font-sans text-lg">Sentiment</CardTitle>
-            <CardDescription>How the room felt, in three buckets</CardDescription>
-          </CardHeader>
-          <CardContent className="pt-5">
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={chartData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={58}
-                    outerRadius={88}
-                    paddingAngle={3}
-                    dataKey="value"
-                    stroke="rgba(255,255,255,0.08)"
-                    strokeWidth={2}
+                return (
+                  <div
+                    key={index}
+                    className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-4 sm:col-span-2"
                   >
-                    {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "rgba(22, 18, 14, 0.96)",
-                      border: "1px solid rgba(255, 255, 255, 0.08)",
-                      borderRadius: "12px",
-                      padding: "10px 12px",
-                      color: "#fff",
-                    }}
-                    formatter={(value: number, name: string) => {
-                      const total =
-                        data.sentiment.positive +
-                        data.sentiment.neutral +
-                        data.sentiment.negative;
-                      const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                      return [`${value} (${percentage}%)`, name];
-                    }}
-                    labelStyle={{ color: "#fff", fontWeight: "600", marginBottom: "4px" }}
-                    itemStyle={{ color: "#fff", fontWeight: "500" }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: "0.8rem", fontWeight: "500" }} />
-                </PieChart>
-              </ResponsiveContainer>
+                    <p className="text-sm leading-relaxed text-white/75">
+                      {parts.map((part, i) => {
+                        if (part.startsWith("**") && part.endsWith("**")) {
+                          return (
+                            <strong key={i} className="font-semibold text-white">
+                              {part.slice(2, -2)}
+                            </strong>
+                          );
+                        }
+                        return <span key={i}>{part}</span>;
+                      })}
+                      {showCursor ? (
+                        <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse align-middle bg-amber-400" />
+                      ) : null}
+                    </p>
+                  </div>
+                );
+              })}
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
-                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#8fba88]">
-                  <TrendingUp className="h-4 w-4" />
-                  <span className="text-xl">{data.sentiment.positive}</span>
-                </div>
-                <p className="text-xs text-muted-foreground">Positive</p>
-              </div>
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
-                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#c4a574]">
-                  <Minus className="h-4 w-4" />
-                  <span className="text-xl">{data.sentiment.neutral}</span>
-                </div>
-                <p className="text-xs text-muted-foreground">Neutral</p>
-              </div>
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
-                <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#d37a6a]">
-                  <TrendingDown className="h-4 w-4" />
-                  <span className="text-xl">{data.sentiment.negative}</span>
-                </div>
-                <p className="text-xs text-muted-foreground">Negative</p>
-              </div>
+          ) : (
+            <div className="flex items-center justify-center gap-3 py-10 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
+              <span className="text-sm">Writing the brief…</span>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-8 animate-in-4 overflow-hidden">
+        <CardHeader className="border-b border-white/[0.06]">
+          <CardTitle className="font-sans text-lg">Sentiment</CardTitle>
+          <CardDescription>How the room felt, in three buckets</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-5">
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={chartData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={58}
+                  outerRadius={88}
+                  paddingAngle={3}
+                  dataKey="value"
+                  stroke="rgba(255,255,255,0.08)"
+                  strokeWidth={2}
+                >
+                  {chartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "rgba(22, 18, 14, 0.96)",
+                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                    borderRadius: "12px",
+                    padding: "10px 12px",
+                    color: "#fff",
+                  }}
+                  formatter={(value: number, name: string) => {
+                    const total =
+                      data.sentiment.positive +
+                      data.sentiment.neutral +
+                      data.sentiment.negative;
+                    const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                    return [`${value} (${percentage}%)`, name];
+                  }}
+                  labelStyle={{ color: "#fff", fontWeight: "600", marginBottom: "4px" }}
+                  itemStyle={{ color: "#fff", fontWeight: "500" }}
+                />
+                <Legend wrapperStyle={{ fontSize: "0.8rem", fontWeight: "500" }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+              <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#8fba88]">
+                <TrendingUp className="h-4 w-4" />
+                <span className="text-xl">{data.sentiment.positive}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">Positive</p>
+            </div>
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+              <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#c4a574]">
+                <Minus className="h-4 w-4" />
+                <span className="text-xl">{data.sentiment.neutral}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">Neutral</p>
+            </div>
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-center">
+              <div className="mb-1 flex items-center justify-center gap-1.5 font-semibold tabular-nums text-[#d37a6a]">
+                <TrendingDown className="h-4 w-4" />
+                <span className="text-xl">{data.sentiment.negative}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">Negative</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

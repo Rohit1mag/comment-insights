@@ -66,7 +66,7 @@ LLM_TIMEOUT_SECS = 300.0
 LLM_SAMPLE_SIZE = 200
 ACTIONS_MARKER = "---ACTIONS---"
 # Gemma-4 thinking can burn the entire max_tokens budget with zero visible content.
-INSIGHTS_MAX_TOKENS = 2000
+INSIGHTS_MAX_TOKENS = 2500
 
 
 def get_together_client() -> Together:
@@ -1251,13 +1251,15 @@ def _build_youtube_insights_prompt(
 
     return f"""Analyze these YouTube comments for the creator.
 
-Write the summary first in this exact format:
+Write a producer brief first in this exact format — heading and paragraph on the same line, blank line between sections:
 
-**Overall Sentiment:**
-[One paragraph summarizing overall sentiment. Be specific about what commenters say.]
+**Overall mood:** [2–3 sentences. What the room felt like, and what they came for versus what they got.]
 
-**Feedback Summary:**
-[One paragraph on positive and negative feedback in representative proportions. If none, write "No specific feedback was provided by commenters."]
+**What landed:** [The moments, arguments, or craft people clipped, quoted, or praised. Name specifics.]
+
+**What stalled:** [What confused, bored, or frustrated people. Name the cluster, not a vague "some viewers".]
+
+**The ask:** [The follow-up, pin, or next video the comments are begging for. One concrete move.]
 
 Then on its own line write exactly: {ACTIONS_MARKER}
 Then a JSON array of 0-3 actionable recommendations for the creator's *next* video.
@@ -1360,13 +1362,15 @@ def get_ai_summary(comments: List[Dict], video_title: str = "", video_descriptio
     if video_description:
         video_context += f"Video Description: {video_description}\n\n"
     
-    prompt = f"""Analyze these YouTube comments and provide a representative summary for the creator. Follow this exact format and style:
+    prompt = f"""Analyze these YouTube comments and write a producer brief for the creator. Follow this exact format — heading and paragraph on the same line, blank line between sections:
 
-**Overall Sentiment:**
-[Write one paragraph that accurately and concisely summarizes the overall sentiment of the comments. Be specific about what commenters are saying and feeling.]
+**Overall mood:** [2–3 sentences. What the room felt like, and what they came for versus what they got.]
 
-**Feedback Summary:**
-[Write one paragraph summarizing the feedback (both positive and negative) that commenters have for the creator. If feedback is present, capture the positives and negatives in proportions representative of the comments. If no meaningful feedback is present, write "No specific feedback was provided by commenters."]
+**What landed:** [The moments, arguments, or craft people clipped, quoted, or praised. Name specifics.]
+
+**What stalled:** [What confused, bored, or frustrated people. Name the cluster, not a vague "some viewers".]
+
+**The ask:** [The follow-up, pin, or next video the comments are begging for. One concrete move.]
 
 Style guidelines:
 - Use clear, professional language
@@ -2703,10 +2707,11 @@ async def get_channel_ideas(
 
 @app.post("/channel/ideas/stream")
 async def get_channel_ideas_stream(request: Request, body: ChannelIdeasRequest):
-    """Stream video ideas via SSE: status → idea → idea → … → done.
+    """Stream video ideas via SSE: status → idea_partial → idea → … → done.
 
     Cached hits emit all ideas immediately then done. Fresh runs emit status
-    while fetching competitor videos, then each idea as the LLM finishes it.
+    while fetching competitor videos, then draft fields as they stream, then
+    each idea as the LLM finishes it.
     """
     email = require_verified_email(request)
     ctx = _load_ideas_context(email, body.refresh)
@@ -2822,7 +2827,13 @@ async def get_channel_ideas_stream(request: Request, body: ChannelIdeasRequest):
                 if item is None:
                     break
                 kind = item[0]
-                if kind == "idea":
+                if kind == "idea_partial":
+                    draft = item[1]
+                    if not isinstance(draft, dict):
+                        continue
+                    yield _sse("idea_partial", draft)
+                    await asyncio.sleep(0)
+                elif kind == "idea":
                     idea = item[1]
                     if not isinstance(idea, dict):
                         continue

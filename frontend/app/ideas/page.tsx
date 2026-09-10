@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,7 @@ import {
 import { getApiUrl } from "@/lib/api";
 import { consumeSse } from "@/lib/sse";
 import { AppShell } from "@/components/AppShell";
+import { IdeaCard, IdeaSkeleton, type VideoIdea } from "@/components/IdeaCard";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBanner } from "@/components/StatusBanner";
 
@@ -98,22 +99,6 @@ interface ChannelProfileResponse {
   competitors: CompetitorChannel[];
   cached: boolean;
   computed_at: string | null;
-}
-
-interface InspiredByVideo {
-  channel_title: string;
-  video_title: string;
-  video_id: string;
-  url: string;
-  view_count: number;
-}
-
-interface VideoIdea {
-  title: string;
-  hook: string;
-  angle: string;
-  why_it_works: string;
-  inspired_by: InspiredByVideo[];
 }
 
 interface SavedChannelResponse {
@@ -288,6 +273,7 @@ export default function IdeasPage() {
   const [channel, setChannel] = useState<ChannelSummary | null>(null);
   const [profile, setProfile] = useState<ChannelProfileResponse | null>(null);
   const [ideas, setIdeas] = useState<VideoIdea[]>([]);
+  const [draftIdea, setDraftIdea] = useState<Partial<VideoIdea> | null>(null);
   const [channelInput, setChannelInput] = useState("");
   const [showInput, setShowInput] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -300,16 +286,21 @@ export default function IdeasPage() {
   const [error, setError] = useState("");
   const [ideasError, setIdeasError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const ideasAbortRef = useRef<AbortController | null>(null);
 
   const loadIdeas = useCallback(
     async (options: { refresh?: boolean } = {}) => {
+      ideasAbortRef.current?.abort();
+      const controller = new AbortController();
+      ideasAbortRef.current = controller;
+
       setIdeasLoading(true);
       setIdeas([]);
+      setDraftIdea(null);
       setIdeasStageIndex(0);
       setIdeasStatus(IDEAS_LOADING_STAGES[0]);
       setIdeasError("");
 
-      const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), IDEAS_TIMEOUT_MS);
 
       try {
@@ -341,12 +332,24 @@ export default function IdeasPage() {
               else if (data.stage === "competitors") setIdeasStageIndex(0);
             }
           },
+          idea_partial: (payload) => {
+            const data = payload as { idea?: Partial<VideoIdea> };
+            if (!data?.idea) return;
+            startTransition(() => {
+              setDraftIdea(data.idea as Partial<VideoIdea>);
+              setIdeasStatus("Writing ideas for your channel…");
+              setIdeasStageIndex(2);
+            });
+          },
           idea: (payload) => {
             const data = payload as { idea?: VideoIdea };
             if (!data?.idea?.title) return;
-            setIdeas((prev) => [...prev, data.idea as VideoIdea]);
-            setIdeasStatus("Writing ideas for your channel…");
-            setIdeasStageIndex(2);
+            startTransition(() => {
+              setIdeas((prev) => [...prev, data.idea as VideoIdea]);
+              setDraftIdea(null);
+              setIdeasStatus("Writing ideas for your channel…");
+              setIdeasStageIndex(2);
+            });
           },
           error: (payload) => {
             const data = payload as { detail?: string };
@@ -354,6 +357,7 @@ export default function IdeasPage() {
           },
           done: () => {
             setIdeasStatus("");
+            setDraftIdea(null);
           },
         });
 
@@ -361,6 +365,7 @@ export default function IdeasPage() {
           throw new Error(streamError);
         }
       } catch (err: unknown) {
+        if (ideasAbortRef.current !== controller) return;
         if (err instanceof DOMException && err.name === "AbortError") {
           setIdeasError("Idea generation took too long. Please try again.");
         } else {
@@ -370,8 +375,11 @@ export default function IdeasPage() {
         }
       } finally {
         clearTimeout(timeoutId);
-        setIdeasLoading(false);
-        setIdeasStatus("");
+        if (ideasAbortRef.current === controller) {
+          setIdeasLoading(false);
+          setIdeasStatus("");
+          setDraftIdea(null);
+        }
       }
     },
     [getToken]
@@ -383,6 +391,7 @@ export default function IdeasPage() {
       setStageIndex(0);
       setError("");
       setIdeas([]);
+      setDraftIdea(null);
       setIdeasError("");
 
       const controller = new AbortController();
@@ -434,6 +443,7 @@ export default function IdeasPage() {
       setChannel(null);
       setProfile(null);
       setIdeas([]);
+      setDraftIdea(null);
       setBootstrapping(false);
       return;
     }
@@ -479,6 +489,12 @@ export default function IdeasPage() {
       cancelled = true;
     };
   }, [authLoaded, isSignedIn, getToken, loadProfile]);
+
+  useEffect(() => {
+    return () => {
+      ideasAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!profileLoading) return;
@@ -532,6 +548,7 @@ export default function IdeasPage() {
       setChannel(resolved);
       setProfile(null);
       setIdeas([]);
+      setDraftIdea(null);
       setShowInput(false);
       setChannelInput("");
       await loadProfile({});
@@ -561,6 +578,12 @@ export default function IdeasPage() {
   const competitors = profile?.competitors ?? [];
   const topVideos = profile?.top_videos ?? [];
   const vibe = profile?.vibe;
+  const showIdeas =
+    competitors.length > 0 || ideas.length > 0 || ideasLoading || Boolean(ideasError);
+  const ideasProgress = Math.min(
+    100,
+    Math.round(((ideas.length + (draftIdea ? 0.45 : 0)) / IDEA_SLOT_COUNT) * 100)
+  );
 
   return (
     <AppShell>
@@ -568,7 +591,7 @@ export default function IdeasPage() {
         <div className="mx-auto max-w-4xl">
           <PageHeader
             title="Ideas"
-            description="Profile your channel, study the rivals in your niche, and get three video ideas written for your vibe."
+            description="Profile your channel, then watch three video ideas write themselves from what is already winning in your niche."
           />
 
           {error ? (
@@ -762,8 +785,126 @@ export default function IdeasPage() {
 
                 {!profileLoading && profile && (
                   <>
+                    {showIdeas ? (
+                      <div className="animate-in-3">
+                        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+                          <div>
+                            <h3 className="mb-1 text-xl font-semibold text-white">
+                              Video ideas for you
+                            </h3>
+                            <p className="text-sm text-muted-foreground">
+                              Adapted from each rival&apos;s top 10 — written for your vibe, not
+                              copied from theirs.
+                            </p>
+                          </div>
+                          {!ideasLoading ? (
+                            <Button
+                              onClick={() => void loadIdeas({ refresh: true })}
+                              disabled={busy}
+                              variant="outline"
+                              size="sm"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              Refresh ideas
+                            </Button>
+                          ) : null}
+                        </div>
+
+                        {ideasError ? (
+                          <StatusBanner
+                            variant="error"
+                            className="mb-6"
+                            action={
+                              <Button
+                                onClick={() => void loadIdeas({})}
+                                disabled={busy}
+                                variant="outline"
+                                size="sm"
+                              >
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                                Retry
+                              </Button>
+                            }
+                          >
+                            {ideasError}
+                          </StatusBanner>
+                        ) : null}
+
+                        {ideasLoading ? (
+                          <div className="mb-6 space-y-3">
+                            <StatusBanner variant="info">
+                              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                              <span>
+                                {ideas.length > 0 || draftIdea
+                                  ? `Writing idea ${Math.min(ideas.length + 1, IDEA_SLOT_COUNT)} of ${IDEA_SLOT_COUNT}…`
+                                  : ideasStatus || IDEAS_LOADING_STAGES[ideasStageIndex]}
+                              </span>
+                            </StatusBanner>
+                            <div
+                              className="h-1 overflow-hidden rounded-full bg-white/5"
+                              role="progressbar"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={ideasProgress}
+                              aria-label="Idea generation progress"
+                            >
+                              <div
+                                className="h-full rounded-full bg-amber-400/80 transition-[width] duration-300"
+                                style={{ width: `${Math.max(8, ideasProgress)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {(ideas.length > 0 || ideasLoading) && (
+                          <div
+                            className="grid gap-4 md:grid-cols-3"
+                            aria-live="polite"
+                            aria-busy={ideasLoading}
+                          >
+                            {ideas.map((idea, index) => (
+                              <IdeaCard
+                                key={`${idea.title}-${index}`}
+                                idea={idea}
+                                index={index}
+                              />
+                            ))}
+                            {ideasLoading && draftIdea ? (
+                              <IdeaCard
+                                idea={draftIdea}
+                                index={ideas.length}
+                                streaming
+                              />
+                            ) : null}
+                            {ideasLoading &&
+                              Array.from({
+                                length: Math.max(
+                                  0,
+                                  IDEA_SLOT_COUNT - ideas.length - (draftIdea ? 1 : 0)
+                                ),
+                              }).map((_, i) => (
+                                <IdeaSkeleton
+                                  key={`idea-skeleton-${ideas.length + i}`}
+                                  label={
+                                    i === 0 && !draftIdea
+                                      ? "Waiting for the first line…"
+                                      : "Up next"
+                                  }
+                                />
+                              ))}
+                          </div>
+                        )}
+
+                        {!ideasLoading && !ideasError && ideas.length === 0 ? (
+                          <p className="text-sm text-white/40">
+                            No ideas yet. Hit refresh once competitors are ready.
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     {vibe && (
-                      <Card className="animate-in-3 overflow-hidden">
+                      <Card className="animate-in-4 overflow-hidden">
                         <CardHeader className="border-b border-white/[0.06]">
                           <div className="flex items-center gap-3.5">
                             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400/10">
@@ -804,64 +945,6 @@ export default function IdeasPage() {
                       </Card>
                     )}
 
-                    {topVideos.length > 0 ? (
-                      <Card className="animate-in-4 overflow-hidden">
-                        <CardHeader className="border-b border-white/[0.06]">
-                          <CardTitle className="mb-1">Top videos</CardTitle>
-                          <CardDescription>
-                            Your most-watched uploads, ranked
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent className="p-3 sm:p-4">
-                          <div className="space-y-0.5">
-                            {topVideos.map((video, index) => (
-                              <a
-                                key={video.video_id}
-                                href={video.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-3 rounded-xl border border-transparent p-3 transition-colors hover:border-white/10 hover:bg-white/[0.04]"
-                              >
-                                <span className="w-7 shrink-0 text-center text-xs font-semibold tabular-nums text-white/35">
-                                  {index + 1}
-                                </span>
-                                <span className="min-w-0 flex-1 truncate text-sm font-medium text-white/90">
-                                  {video.title}
-                                </span>
-                                <span className="hidden shrink-0 items-center gap-1.5 text-sm tabular-nums text-muted-foreground sm:flex">
-                                  <Eye className="h-3.5 w-3.5 text-white/40" />
-                                  {formatCount(video.view_count)}
-                                </span>
-                                <span className="w-16 shrink-0 text-right text-xs text-white/40">
-                                  {formatRelative(video.published_at)}
-                                </span>
-                              </a>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ) : (
-                      <Card className="animate-in-4 overflow-hidden">
-                        <CardHeader>
-                          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
-                            <Video className="h-5 w-5 text-amber-300" />
-                          </div>
-                          <CardTitle className="mb-2 text-2xl">
-                            We couldn&apos;t find public videos on that channel
-                          </CardTitle>
-                          <CardDescription>
-                            Private, unlisted or members-only uploads stay hidden from the API. If
-                            this isn&apos;t your channel, point us at the right one.
-                          </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          <Button onClick={handleChangeChannel}>
-                            Change channel
-                          </Button>
-                        </CardContent>
-                      </Card>
-                    )}
-
                     <div className="animate-in-5">
                       <div className="mb-5">
                         <h3 className="mb-1 text-xl font-semibold text-white">Your biggest rivals</h3>
@@ -884,33 +967,33 @@ export default function IdeasPage() {
                                     className="h-12 w-12 rounded-xl"
                                   />
                                   <div className="min-w-0 flex-1">
-                                    <CardTitle className="text-base font-bold text-white truncate">
+                                    <CardTitle className="truncate text-base font-bold text-white">
                                       {competitor.title}
                                     </CardTitle>
                                     {competitor.handle && (
-                                      <p className="text-xs text-white/40 truncate mt-0.5">
+                                      <p className="mt-0.5 truncate text-xs text-white/40">
                                         {competitor.handle}
                                       </p>
                                     )}
                                   </div>
                                 </div>
                               </CardHeader>
-                              <CardContent className="p-6 pt-0 flex flex-col flex-1">
-                                <div className="flex flex-wrap items-center gap-2 mb-4">
+                              <CardContent className="flex flex-1 flex-col p-6 pt-0">
+                                <div className="mb-4 flex flex-wrap items-center gap-2">
                                   <Badge
                                     variant="secondary"
-                                    className="bg-white/5 text-white/75 border-white/10 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                                    className="rounded-full border-white/10 bg-white/5 px-2.5 py-0.5 text-xs font-medium text-white/75"
                                   >
                                     {subscriberLabel(competitor.subscriber_count)}
                                   </Badge>
                                   <Badge
                                     variant="secondary"
-                                    className="bg-amber-500/10 text-amber-200 border-amber-400/30 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                                    className="rounded-full border-amber-400/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-200"
                                   >
                                     Score {competitor.score.toFixed(2)}
                                   </Badge>
                                 </div>
-                                <p className="text-sm text-muted-foreground leading-relaxed flex-1">
+                                <p className="flex-1 text-sm leading-relaxed text-muted-foreground">
                                   {competitor.reason}
                                 </p>
                                 <details className="group mt-4">
@@ -962,7 +1045,7 @@ export default function IdeasPage() {
                                   href={competitor.url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 mt-5 text-sm font-semibold text-amber-200 hover:text-amber-100 transition-colors"
+                                  className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-amber-200 transition-colors hover:text-amber-100"
                                 >
                                   Open channel
                                   <ExternalLink className="h-4 w-4" />
@@ -973,173 +1056,68 @@ export default function IdeasPage() {
                         </div>
                       )}
                       {competitors.length < 3 && (
-                        <p className="text-sm text-white/40 mt-6">
+                        <p className="mt-6 text-sm text-white/40">
                           Discovery found fewer than three strong matches for this channel.
                         </p>
                       )}
                     </div>
 
-                    {competitors.length > 0 && (
-                      <div className="mt-10 animate-in-5">
-                        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-                          <div>
-                            <h3 className="mb-1 text-xl font-semibold text-white">
-                              Video ideas for you
-                            </h3>
-                            <p className="text-sm text-muted-foreground">
-                              Adapted from each rival&apos;s top 10 — written for your vibe, not
-                              copied from theirs.
-                            </p>
-                          </div>
-                          {!ideasLoading ? (
-                            <Button
-                              onClick={() => void loadIdeas({ refresh: true })}
-                              disabled={busy}
-                              variant="outline"
-                              size="sm"
-                            >
-                              <RefreshCw className="mr-2 h-4 w-4" />
-                              Refresh ideas
-                            </Button>
-                          ) : null}
-                        </div>
-
-                        {ideasError ? (
-                          <StatusBanner
-                            variant="error"
-                            className="mb-6"
-                            action={
-                              <Button
-                                onClick={() => void loadIdeas({})}
-                                disabled={busy}
-                                variant="outline"
-                                size="sm"
+                    {topVideos.length > 0 ? (
+                      <Card className="animate-in-5 overflow-hidden">
+                        <CardHeader className="border-b border-white/[0.06]">
+                          <CardTitle className="mb-1">Top videos</CardTitle>
+                          <CardDescription>
+                            Your most-watched uploads, ranked
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="p-3 sm:p-4">
+                          <div className="space-y-0.5">
+                            {topVideos.map((video, index) => (
+                              <a
+                                key={video.video_id}
+                                href={video.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-3 rounded-xl border border-transparent p-3 transition-colors hover:border-white/10 hover:bg-white/[0.04]"
                               >
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Retry
-                              </Button>
-                            }
-                          >
-                            {ideasError}
-                          </StatusBanner>
-                        ) : null}
-
-                        {ideasLoading ? (
-                          <StatusBanner variant="info" className="mb-6">
-                            <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                            <span>
-                              {ideasStatus || IDEAS_LOADING_STAGES[ideasStageIndex]}
-                            </span>
-                          </StatusBanner>
-                        ) : null}
-
-                        {(ideas.length > 0 || ideasLoading) && (
-                          <div className="grid gap-4 md:grid-cols-3">
-                            {ideas.map((idea, index) => (
-                              <Card
-                                key={`${idea.title}-${index}`}
-                                className="flex flex-col overflow-hidden animate-in-2 transition-colors hover:border-amber-400/20 hover:bg-white/[0.05]"
-                              >
-                                <CardHeader className="pb-3">
-                                  <div className="mb-3 flex items-center gap-2.5">
-                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-amber-500/20 to-orange-500/20">
-                                      <Lightbulb className="h-4 w-4 text-amber-300" />
-                                    </div>
-                                    <Badge className="border-amber-400/25 bg-amber-500/10 text-amber-200">
-                                      Idea {index + 1}
-                                    </Badge>
-                                  </div>
-                                  <CardTitle className="text-base leading-snug text-white">
-                                    {idea.title}
-                                  </CardTitle>
-                                </CardHeader>
-                                <CardContent className="flex flex-1 flex-col space-y-4 pt-0">
-                                  {idea.hook && (
-                                    <div>
-                                      <p className="text-xs uppercase tracking-wider text-white/40 font-semibold mb-1">
-                                        Hook
-                                      </p>
-                                      <p className="text-sm text-white/75 leading-relaxed">
-                                        {idea.hook}
-                                      </p>
-                                    </div>
-                                  )}
-                                  {idea.angle && (
-                                    <div>
-                                      <p className="text-xs uppercase tracking-wider text-white/40 font-semibold mb-1">
-                                        Your angle
-                                      </p>
-                                      <p className="text-sm text-white/75 leading-relaxed">
-                                        {idea.angle}
-                                      </p>
-                                    </div>
-                                  )}
-                                  {idea.why_it_works && (
-                                    <div>
-                                      <p className="text-xs uppercase tracking-wider text-white/40 font-semibold mb-1">
-                                        Why it works
-                                      </p>
-                                      <p className="text-sm text-muted-foreground leading-relaxed">
-                                        {idea.why_it_works}
-                                      </p>
-                                    </div>
-                                  )}
-                                  {idea.inspired_by.length > 0 && (
-                                    <div className="pt-2 border-t border-white/5 mt-auto">
-                                      <p className="text-xs uppercase tracking-wider text-white/40 font-semibold mb-2">
-                                        Inspired by
-                                      </p>
-                                      <ul className="space-y-2">
-                                        {idea.inspired_by.map((ref) => {
-                                          const key = `${ref.video_id}-${ref.video_title}`;
-                                          const label = ref.channel_title
-                                            ? `${ref.channel_title}: ${ref.video_title}`
-                                            : ref.video_title;
-                                          if (ref.url) {
-                                            return (
-                                              <li key={key}>
-                                                <a
-                                                  href={ref.url}
-                                                  target="_blank"
-                                                  rel="noopener noreferrer"
-                                                  className="text-xs text-amber-200 hover:text-amber-100 transition-colors inline-flex items-start gap-1.5"
-                                                >
-                                                  <ExternalLink className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                                  <span>{label}</span>
-                                                </a>
-                                              </li>
-                                            );
-                                          }
-                                          return (
-                                            <li key={key} className="text-xs text-muted-foreground">
-                                              {label}
-                                            </li>
-                                          );
-                                        })}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </CardContent>
-                              </Card>
+                                <span className="w-7 shrink-0 text-center text-xs font-semibold tabular-nums text-white/35">
+                                  {index + 1}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-sm font-medium text-white/90">
+                                  {video.title}
+                                </span>
+                                <span className="hidden shrink-0 items-center gap-1.5 text-sm tabular-nums text-muted-foreground sm:flex">
+                                  <Eye className="h-3.5 w-3.5 text-white/40" />
+                                  {formatCount(video.view_count)}
+                                </span>
+                                <span className="w-16 shrink-0 text-right text-xs text-white/40">
+                                  {formatRelative(video.published_at)}
+                                </span>
+                              </a>
                             ))}
-                            {ideasLoading &&
-                              Array.from({
-                                length: Math.max(0, IDEA_SLOT_COUNT - ideas.length),
-                              }).map((_, i) => (
-                                <div
-                                  key={`idea-skeleton-${ideas.length + i}`}
-                                  className="h-52 animate-pulse rounded-2xl border border-white/[0.08] bg-white/[0.03]"
-                                />
-                              ))}
                           </div>
-                        )}
-
-                        {!ideasLoading && !ideasError && ideas.length === 0 && (
-                          <p className="text-sm text-white/40">
-                            No ideas yet. Hit refresh once competitors are ready.
-                          </p>
-                        )}
-                      </div>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <Card className="animate-in-5 overflow-hidden">
+                        <CardHeader>
+                          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                            <Video className="h-5 w-5 text-amber-300" />
+                          </div>
+                          <CardTitle className="mb-2 text-2xl">
+                            We couldn&apos;t find public videos on that channel
+                          </CardTitle>
+                          <CardDescription>
+                            Private, unlisted or members-only uploads stay hidden from the API. If
+                            this isn&apos;t your channel, point us at the right one.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <Button onClick={handleChangeChannel}>
+                            Change channel
+                          </Button>
+                        </CardContent>
+                      </Card>
                     )}
                   </>
                 )}
