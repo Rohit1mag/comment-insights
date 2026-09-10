@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import {
   MessageSquare,
   CheckCircle2,
   Loader2,
-  Youtube,
+  Play,
   Sparkles,
 } from "lucide-react";
 import {
@@ -21,6 +22,9 @@ import {
   useUser,
 } from "@clerk/nextjs";
 import { getApiUrl } from "@/lib/api";
+import { consumeSse } from "@/lib/sse";
+import { DEMO_ANALYSIS } from "@/lib/demo";
+import type { AnalysisData } from "@/lib/types";
 import { AppShell } from "@/components/AppShell";
 import { StatusBanner } from "@/components/StatusBanner";
 import type { UsageData } from "@/components/UsageChip";
@@ -28,67 +32,6 @@ import type { UsageData } from "@/components/UsageChip";
 const AnalysisResults = dynamic(() => import("@/components/AnalysisResults"), {
   ssr: false,
 });
-
-interface AnalysisData {
-  video_id?: string;
-  video_title?: string;
-  total_comments?: number;
-  summary: string;
-  sentiment: {
-    positive: number;
-    neutral: number;
-    negative: number;
-  };
-  action_items: Array<{
-    title: string;
-    description: string;
-    impact: string;
-  }>;
-}
-
-async function consumeSse(
-  response: Response,
-  handlers: Record<string, (data: any) => void>
-) {
-  if (!response.body) {
-    throw new Error("No response body");
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let sep;
-    while ((sep = buffer.indexOf("\n\n")) >= 0) {
-      const rawEvent = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-
-      let eventName = "message";
-      const dataLines: string[] = [];
-      for (const line of rawEvent.split("\n")) {
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      if (dataLines.length === 0) continue;
-      const dataStr = dataLines.join("\n");
-      let parsed: any = dataStr;
-      try {
-        parsed = JSON.parse(dataStr);
-      } catch {
-        /* keep raw string */
-      }
-      const handler = handlers[eventName];
-      if (handler) handler(parsed);
-    }
-  }
-}
 
 function GuestSignupCta({ message }: { message?: string }) {
   return (
@@ -109,38 +52,41 @@ function GuestSignupCta({ message }: { message?: string }) {
       }
     >
       {message ||
-        "You've used your free guest analysis. Sign up to get 5 free analyses a month."}
+        "You've used your free guest analysis. Sign up for 5 free analyses a month."}
     </StatusBanner>
   );
 }
 
-const EXAMPLES = [
-  {
-    title: "Improve audio quality",
-    body: "Multiple viewers mentioned background noise. Consider using a better microphone or noise reduction software.",
-    iconClass: "from-blue-500/20 to-cyan-500/20",
-    iconColor: "text-blue-400",
-  },
-  {
-    title: "Add timestamps",
-    body: "Viewers want to jump to specific sections. Add chapter markers to improve navigation.",
-    iconClass: "from-violet-500/20 to-fuchsia-500/20",
-    iconColor: "text-violet-400",
-  },
-  {
-    title: "Slow down explanations",
-    body: "Beginners found the pace too fast. Consider adding more pauses and breaking down complex topics.",
-    iconClass: "from-cyan-500/20 to-blue-500/20",
-    iconColor: "text-cyan-400",
-  },
-];
+function AnalysisSkeleton() {
+  return (
+    <div className="mx-auto max-w-5xl animate-in-2" aria-hidden>
+      <div className="mb-10 space-y-3">
+        <div className="h-4 w-24 animate-pulse rounded bg-white/5" />
+        <div className="h-10 w-3/4 animate-pulse rounded-lg bg-white/5" />
+        <div className="h-4 w-40 animate-pulse rounded bg-white/5" />
+      </div>
+      <div className="mb-8 h-64 animate-pulse rounded-2xl border border-white/[0.08] bg-white/[0.03]" />
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="h-72 animate-pulse rounded-2xl border border-white/[0.08] bg-white/[0.03]" />
+        <div className="h-72 animate-pulse rounded-2xl border border-white/[0.08] bg-white/[0.03]" />
+      </div>
+    </div>
+  );
+}
 
-export default function Home() {
+function HomePage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const demoFromUrl = searchParams.get("demo") === "1";
+  const urlFromQuery = searchParams.get("url");
   const { user, isSignedIn, isLoaded: authLoaded } = useUser();
   const { getToken } = useAuth();
   const [videoUrl, setVideoUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(
+    demoFromUrl ? DEMO_ANALYSIS : null
+  );
+  const [isDemo, setIsDemo] = useState(demoFromUrl);
   const [isStreaming, setIsStreaming] = useState(false);
   const [summaryStreaming, setSummaryStreaming] = useState(false);
   const [error, setError] = useState("");
@@ -151,6 +97,25 @@ export default function Home() {
   const claimedGuestRef = useRef<string | null>(null);
 
   const userEmail = user?.primaryEmailAddress?.emailAddress;
+
+  useEffect(() => {
+    if (urlFromQuery) setVideoUrl(urlFromQuery);
+  }, [urlFromQuery]);
+
+  useEffect(() => {
+    if (demoFromUrl) {
+      setIsDemo(true);
+      setAnalysisData(DEMO_ANALYSIS);
+      setIsStreaming(false);
+      setSummaryStreaming(false);
+      setError("");
+      return;
+    }
+    setIsDemo(false);
+    setAnalysisData((prev) =>
+      prev?.video_id === DEMO_ANALYSIS.video_id ? null : prev
+    );
+  }, [demoFromUrl]);
 
   useEffect(() => {
     if (!authLoaded) return;
@@ -211,9 +176,23 @@ export default function Home() {
     };
   }, [authLoaded, isSignedIn, userEmail, getToken]);
 
+  const openDemo = () => {
+    setError("");
+    setIsStreaming(false);
+    setSummaryStreaming(false);
+    router.replace("/?demo=1");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const resetToHome = () => {
+    setIsStreaming(false);
+    setSummaryStreaming(false);
+    router.replace("/");
+  };
+
   const handleAnalyze = async () => {
     if (!videoUrl) {
-      setError("Please enter a YouTube URL");
+      setError("Paste a YouTube URL to start.");
       return;
     }
 
@@ -225,7 +204,7 @@ export default function Home() {
 
     if (isSignedIn && usage && !usage.is_unlimited && usage.remaining <= 0) {
       setError(
-        `You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month!`
+        `You've reached your ${usage.tier} tier limit of ${usage.limit} analyses. Upgrade to Pro for 15 analyses/month.`
       );
       return;
     }
@@ -233,9 +212,11 @@ export default function Home() {
     setError("");
     setShowGuestSignupCta(false);
     setLoading(true);
+    setIsDemo(false);
     setAnalysisData(null);
     setIsStreaming(false);
     setSummaryStreaming(false);
+    router.replace("/");
 
     try {
       const apiUrl = getApiUrl();
@@ -243,7 +224,7 @@ export default function Home() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 300000);
 
-      setLoadingStep("Fetching comments from YouTube…");
+      setLoadingStep("Pulling comments from YouTube…");
 
       const token = isSignedIn ? await getToken() : null;
       const headers: Record<string, string> = {
@@ -287,35 +268,37 @@ export default function Home() {
 
       await consumeSse(response, {
         meta: (meta) => {
+          const payload = (meta || {}) as Partial<AnalysisData>;
           setLoading(false);
           setIsStreaming(true);
           setSummaryStreaming(true);
-          setLoadingStep("Generating insights…");
-          const sentiment = meta?.sentiment || {
+          setLoadingStep("Writing the brief…");
+          const sentiment = payload.sentiment || {
             positive: 0,
             neutral: 0,
             negative: 0,
           };
           setAnalysisData({
-            ...meta,
+            ...payload,
             summary: "",
             sentiment,
             action_items: [],
           });
         },
         sentiment: (sentiment) => {
+          const next = sentiment as AnalysisData["sentiment"];
           setAnalysisData((prev) =>
             prev
-              ? { ...prev, sentiment }
+              ? { ...prev, sentiment: next }
               : {
                   summary: "",
-                  sentiment,
+                  sentiment: next,
                   action_items: [],
                 }
           );
         },
         summary_delta: (payload) => {
-          const text = payload?.text ?? "";
+          const text = (payload as { text?: string })?.text ?? "";
           if (!text) return;
           setAnalysisData((prev) =>
             prev
@@ -324,7 +307,7 @@ export default function Home() {
           );
         },
         summary: (payload) => {
-          const text = payload?.text ?? "";
+          const text = (payload as { text?: string })?.text ?? "";
           setSummaryStreaming(false);
           setAnalysisData((prev) =>
             prev
@@ -337,13 +320,14 @@ export default function Home() {
           );
         },
         action_items: (items) => {
+          const list = Array.isArray(items) ? items : [];
           setAnalysisData((prev) =>
             prev
-              ? { ...prev, action_items: Array.isArray(items) ? items : [] }
+              ? { ...prev, action_items: list }
               : {
                   summary: "",
                   sentiment: { positive: 0, neutral: 0, negative: 0 },
-                  action_items: Array.isArray(items) ? items : [],
+                  action_items: list,
                 }
           );
         },
@@ -367,7 +351,7 @@ export default function Home() {
           }
         },
         error: (payload) => {
-          streamError = payload?.detail || "Analysis failed";
+          streamError = (payload as { detail?: string })?.detail || "Analysis failed";
         },
       });
 
@@ -377,11 +361,13 @@ export default function Home() {
         }
         throw new Error(streamError);
       }
-    } catch (err: any) {
-      if (err.name === "AbortError") {
-        setError("Request timed out. Please try again.");
+    } catch (err: unknown) {
+      const name = err instanceof Error ? err.name : "";
+      const message = err instanceof Error ? err.message : "";
+      if (name === "AbortError") {
+        setError("Request timed out. Try again with a shorter comment section.");
       } else {
-        setError(err.message || "Something went wrong. Please try again.");
+        setError(message || "Something went wrong. Please try again.");
       }
       setIsStreaming(false);
       setSummaryStreaming(false);
@@ -395,40 +381,50 @@ export default function Home() {
 
   return (
     <AppShell usage={usage}>
-      <main className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
-        {!analysisData ? (
+      <main id="main" className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+        {loading && !analysisData ? (
+          <>
+            <StatusBanner variant="info" className="mx-auto mb-8 max-w-5xl">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              <span>{loadingStep || "Working…"}</span>
+            </StatusBanner>
+            <AnalysisSkeleton />
+          </>
+        ) : !analysisData ? (
           <>
             <div className="mx-auto mb-16 max-w-3xl text-center">
-              <Badge className="mb-6 animate-in-1 px-3 py-1">AI-Powered Analysis</Badge>
-              <h2 className="mb-5 animate-in-2 text-4xl font-bold leading-[1.1] tracking-tight sm:text-6xl">
-                <span className="gradient-text block">Transform comments</span>
-                <span className="mt-2 block text-white/85">into insights</span>
-              </h2>
+              <Badge className="mb-6 animate-in-1 px-3 py-1">Comment intelligence</Badge>
+              <h1 className="mb-5 animate-in-2 font-display text-4xl font-medium leading-[1.08] tracking-tight sm:text-6xl">
+                Read every comment.
+                <span className="mt-2 block text-amber-200/90">Keep the signal.</span>
+              </h1>
               <p className="mx-auto mb-10 max-w-xl animate-in-3 text-base leading-relaxed text-muted-foreground sm:text-lg">
-                Get actionable feedback from YouTube comments. Understand sentiment,
-                discover patterns, and improve your content.
+                Disstill turns a YouTube comment section into a short brief:
+                mood, patterns, and the three things to fix before you upload again.
               </p>
 
-              <div className="mx-auto mb-5 flex max-w-2xl animate-in-4 flex-col gap-3 sm:flex-row sm:items-center">
-                <label className="flex h-12 flex-1 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-4 transition-colors focus-within:border-blue-400/40 focus-within:ring-2 focus-within:ring-blue-400/20 hover:bg-white/[0.06]">
-                  <Youtube className="h-5 w-5 shrink-0 text-white/35" />
+              <form
+                className="mx-auto mb-5 flex max-w-2xl animate-in-4 flex-col gap-3 sm:flex-row sm:items-center"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleAnalyze();
+                }}
+              >
+                <label className="flex h-12 flex-1 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-4 transition-colors focus-within:border-amber-400/40 focus-within:ring-2 focus-within:ring-amber-400/20 hover:bg-white/[0.06]">
+                  <Play className="h-4 w-4 shrink-0 text-amber-300/70" />
                   <input
                     type="text"
-                    placeholder="Paste a YouTube video URL"
+                    inputMode="url"
+                    placeholder="https://www.youtube.com/watch?v=…"
                     value={videoUrl}
                     onChange={(e) => setVideoUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
                     className="h-full w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
                     disabled={loading}
                     aria-label="YouTube video URL"
+                    autoComplete="off"
                   />
                 </label>
-                <Button
-                  onClick={handleAnalyze}
-                  disabled={loading}
-                  size="lg"
-                  className="h-12 px-7"
-                >
+                <Button type="submit" disabled={loading} size="lg" className="h-12 px-7">
                   {loading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -441,7 +437,7 @@ export default function Home() {
                     </>
                   )}
                 </Button>
-              </div>
+              </form>
 
               {error ? (
                 <StatusBanner variant="error" className="mx-auto mb-5 max-w-2xl text-left">
@@ -453,91 +449,128 @@ export default function Home() {
                 <GuestSignupCta
                   message={
                     usage && usage.remaining <= 0
-                      ? "You've used your free guest analysis. Sign up to get 5 free analyses a month."
+                      ? "You've used your free guest analysis. Sign up for 5 free analyses a month."
                       : undefined
                   }
                 />
               ) : null}
 
-              {loading ? (
-                <StatusBanner variant="info" className="mx-auto mb-5 max-w-2xl">
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                  <span>{loadingStep || "Processing..."}</span>
-                </StatusBanner>
-              ) : null}
-
-              <p className="text-sm text-white/40">
-                {isSignedIn
-                  ? "Typically 15–30 seconds · works with any public YouTube video"
-                  : usage && usage.remaining <= 0
-                    ? "Free guest analysis used — sign up for 5 free analyses a month"
-                    : "Try 1 free analysis — no account needed"}
-              </p>
+              <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+                <p className="text-sm text-white/40">
+                  {isSignedIn
+                    ? "Usually 15–30 seconds · any public video"
+                    : usage && usage.remaining <= 0
+                      ? "Free guest analysis used — sign up for five a month"
+                      : "One free analysis · no account"}
+                </p>
+                <span className="hidden text-white/20 sm:inline">·</span>
+                <button
+                  type="button"
+                  onClick={openDemo}
+                  className="text-sm font-medium text-amber-200/80 transition-colors hover:text-amber-100"
+                >
+                  View a sample report
+                </button>
+              </div>
             </div>
 
+            <ol className="mb-16 grid gap-4 md:grid-cols-3">
+              {[
+                {
+                  step: "01",
+                  title: "Paste a URL",
+                  body: "Any public YouTube video. We pull up to a thousand comments — the ones people actually wrote, not a summary of the transcript.",
+                  motion: "animate-in-2",
+                },
+                {
+                  step: "02",
+                  title: "Read the room",
+                  body: "Sentiment is scored, then a brief is written like a producer note: what landed, what stalled, and what they asked for.",
+                  motion: "animate-in-3",
+                },
+                {
+                  step: "03",
+                  title: "Ship the fix",
+                  body: "Three to five actions, ranked by impact. Export a PDF if you want it in the next standup.",
+                  motion: "animate-in-4",
+                },
+              ].map((item) => (
+                <li
+                  key={item.step}
+                  className={`rounded-2xl border border-white/[0.08] bg-white/[0.03] p-6 text-left ${item.motion}`}
+                >
+                  <p className="mb-3 font-mono text-xs tracking-widest text-amber-300/70">
+                    {item.step}
+                  </p>
+                  <h2 className="mb-2 font-display text-2xl font-medium">{item.title}</h2>
+                  <p className="text-sm leading-relaxed text-muted-foreground">{item.body}</p>
+                </li>
+              ))}
+            </ol>
+
             <div className="mb-16 grid gap-4 md:grid-cols-3">
-              <Card className="animate-in-2 group transition-colors hover:border-blue-400/25 hover:bg-white/[0.05]">
+              <Card className="animate-in-2 group transition-colors hover:border-amber-400/25 hover:bg-white/[0.05]">
                 <CardHeader>
-                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20">
-                    <TrendingUp className="h-5 w-5 text-blue-400" />
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                    <TrendingUp className="h-5 w-5 text-amber-300" />
                   </div>
-                  <CardTitle className="mb-2">Sentiment analysis</CardTitle>
+                  <CardTitle className="mb-2 font-sans text-lg">Sentiment, scored</CardTitle>
                   <CardDescription>
-                    Understand the overall mood of your audience with a clear
-                    breakdown of positive, neutral, and negative comments.
+                    Positive, neutral, and negative — counted from the comments, not guessed from the title.
                   </CardDescription>
                 </CardHeader>
               </Card>
 
-              <Card className="animate-in-3 group transition-colors hover:border-violet-400/25 hover:bg-white/[0.05]">
+              <Card className="animate-in-3 group transition-colors hover:border-amber-400/25 hover:bg-white/[0.05]">
                 <CardHeader>
-                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20">
-                    <CheckCircle2 className="h-5 w-5 text-violet-400" />
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                    <CheckCircle2 className="h-5 w-5 text-amber-300" />
                   </div>
-                  <CardTitle className="mb-2">Action items</CardTitle>
+                  <CardTitle className="mb-2 font-sans text-lg">What to fix next</CardTitle>
                   <CardDescription>
-                    Get specific, prioritized recommendations on what to improve
-                    in your next video.
+                    Specific recommendations, ranked. Audio, pacing, chapters, the question you keep getting asked.
                   </CardDescription>
                 </CardHeader>
               </Card>
 
-              <Card className="animate-in-4 group transition-colors hover:border-cyan-400/25 hover:bg-white/[0.05]">
+              <Card className="animate-in-4 group transition-colors hover:border-amber-400/25 hover:bg-white/[0.05]">
                 <CardHeader>
-                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20">
-                    <MessageSquare className="h-5 w-5 text-cyan-400" />
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                    <MessageSquare className="h-5 w-5 text-amber-300" />
                   </div>
-                  <CardTitle className="mb-2">Clear summaries</CardTitle>
+                  <CardTitle className="mb-2 font-sans text-lg">A brief you can read</CardTitle>
                   <CardDescription>
-                    A concise read on overall sentiment and the feedback that
-                    actually matters.
+                    Not a wall of quotes. A short read on mood, the feedback that repeated, and the follow-up people want.
                   </CardDescription>
                 </CardHeader>
               </Card>
             </div>
 
             <Card className="animate-in-5 overflow-hidden">
-              <CardHeader className="border-b border-white/[0.06]">
-                <CardTitle className="text-xl">See it in action</CardTitle>
-                <CardDescription>
-                  Example insights from a typical video analysis
-                </CardDescription>
+              <CardHeader className="border-b border-white/[0.06] sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle className="font-sans text-lg">See a finished brief</CardTitle>
+                  <CardDescription>
+                    A sample report from a studio-gear video — the same layout you get on a live run.
+                  </CardDescription>
+                </div>
+                <Button onClick={openDemo} variant="outline" className="mt-4 sm:mt-0">
+                  Open sample
+                </Button>
               </CardHeader>
               <div className="space-y-2 p-4 sm:p-5">
-                {EXAMPLES.map((example) => (
+                {DEMO_ANALYSIS.action_items.slice(0, 3).map((item, index) => (
                   <div
-                    key={example.title}
+                    key={item.title}
                     className="flex items-start gap-3.5 rounded-xl border border-transparent p-4 transition-colors hover:border-white/10 hover:bg-white/[0.04]"
                   >
-                    <div
-                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ${example.iconClass}`}
-                    >
-                      <CheckCircle2 className={`h-4 w-4 ${example.iconColor}`} />
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/5 font-mono text-sm text-amber-200">
+                      {index + 1}
                     </div>
                     <div>
-                      <p className="mb-0.5 font-medium text-white">{example.title}</p>
+                      <p className="mb-0.5 font-medium text-white">{item.title}</p>
                       <p className="text-sm leading-relaxed text-muted-foreground">
-                        {example.body}
+                        {item.description}
                       </p>
                     </div>
                   </div>
@@ -547,20 +580,17 @@ export default function Home() {
           </>
         ) : (
           <>
-            {showGuestSignupCta && isGuest && !isStreaming ? (
+            {showGuestSignupCta && isGuest && !isStreaming && !isDemo ? (
               <div className="mx-auto mb-6 max-w-4xl">
-                <GuestSignupCta message="Enjoying the insights? Sign up to keep analyzing — free accounts get 5 analyses a month." />
+                <GuestSignupCta message="Keep going — free accounts get 5 analyses a month." />
               </div>
             ) : null}
             <AnalysisResults
               data={analysisData}
               isStreaming={isStreaming}
               summaryStreaming={summaryStreaming}
-              onNewAnalysis={() => {
-                setAnalysisData(null);
-                setIsStreaming(false);
-                setSummaryStreaming(false);
-              }}
+              isDemo={isDemo}
+              onNewAnalysis={resetToHome}
             />
           </>
         )}
@@ -568,12 +598,12 @@ export default function Home() {
 
       {creditUsedNotification && usage ? (
         <div className="fixed top-20 left-1/2 z-50 -translate-x-1/2 animate-in-1">
-          <div className="flex items-center gap-3 rounded-xl border border-blue-400/25 bg-[#0b1220]/90 px-4 py-3 shadow-xl shadow-black/40 backdrop-blur-xl">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/15">
-              <Sparkles className="h-4 w-4 text-blue-400" />
+          <div className="flex items-center gap-3 rounded-xl border border-amber-400/25 bg-[#16120e]/90 px-4 py-3 shadow-xl shadow-black/40 backdrop-blur-xl">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500/15">
+              <Sparkles className="h-4 w-4 text-amber-300" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-blue-200">
+              <p className="text-sm font-semibold text-amber-100">
                 {isGuest ? "Free analysis used" : "1 credit used"}
               </p>
               <p className="text-xs text-muted-foreground">
@@ -588,5 +618,19 @@ export default function Home() {
         </div>
       ) : null}
     </AppShell>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell>
+          <main id="main" className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14" />
+        </AppShell>
+      }
+    >
+      <HomePage />
+    </Suspense>
   );
 }

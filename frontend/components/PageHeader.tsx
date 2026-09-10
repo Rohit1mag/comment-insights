@@ -11,7 +11,7 @@ export function PageHeader({
 }) {
   return (
     <div className={cn("mb-10 animate-in-1", className)}>
-      <h1 className="gradient-text mb-3 text-4xl font-bold tracking-tight sm:text-5xl">
+      <h1 className="mb-3 font-display text-4xl font-medium tracking-tight text-foreground sm:text-5xl">
         {title}
       </h1>
       {description ? (

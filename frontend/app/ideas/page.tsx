@@ -26,6 +26,7 @@ import {
   useUser,
 } from "@clerk/nextjs";
 import { getApiUrl } from "@/lib/api";
+import { consumeSse } from "@/lib/sse";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBanner } from "@/components/StatusBanner";
@@ -154,50 +155,6 @@ async function readError(response: Response, fallback: string): Promise<string> 
   }
 }
 
-async function consumeSse(
-  response: Response,
-  handlers: Record<string, (data: unknown) => void>
-) {
-  if (!response.body) {
-    throw new Error("No response body");
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let sep;
-    while ((sep = buffer.indexOf("\n\n")) >= 0) {
-      const rawEvent = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-
-      let eventName = "message";
-      const dataLines: string[] = [];
-      for (const line of rawEvent.split("\n")) {
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      if (dataLines.length === 0) continue;
-      const dataStr = dataLines.join("\n");
-      let parsed: unknown = dataStr;
-      try {
-        parsed = JSON.parse(dataStr);
-      } catch {
-        /* keep raw string */
-      }
-      const handler = handlers[eventName];
-      if (handler) handler(parsed);
-    }
-  }
-}
-
 function formatRelative(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";
@@ -258,9 +215,9 @@ function ChannelAvatar({
   if (!src) {
     return (
       <div
-        className={`${className} bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center flex-shrink-0`}
+        className={`${className} bg-amber-400/10 flex items-center justify-center flex-shrink-0`}
       >
-        <Youtube className="h-6 w-6 text-blue-400" />
+        <Youtube className="h-6 w-6 text-amber-300" />
       </div>
     );
   }
@@ -607,11 +564,11 @@ export default function IdeasPage() {
 
   return (
     <AppShell>
-      <main className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+      <main id="main" className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
         <div className="mx-auto max-w-4xl">
           <PageHeader
-            title="Content ideas"
-            description="Study your rivals' hits, then get three video ideas that fit your channel."
+            title="Ideas"
+            description="Profile your channel, study the rivals in your niche, and get three video ideas written for your vibe."
           />
 
           {error ? (
@@ -632,13 +589,15 @@ export default function IdeasPage() {
           <SignedOut>
             <Card className="animate-in-2">
               <CardHeader>
-                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20">
-                  <Lightbulb className="h-5 w-5 text-blue-400" />
+                <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                  <Lightbulb className="h-5 w-5 text-amber-300" />
                 </div>
-                <CardTitle className="mb-2 text-2xl">Sign in to profile your channel</CardTitle>
+                <CardTitle className="mb-2 font-display text-2xl font-medium">
+                  Sign in to profile your channel
+                </CardTitle>
                 <CardDescription>
-                  We&apos;ll read your channel&apos;s niche, tone and format, then surface the
-                  competitors fighting for the same audience.
+                  We read niche, tone, and format, then surface the channels fighting for the
+                  same audience.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -657,7 +616,7 @@ export default function IdeasPage() {
           <SignedIn>
             {bootstrapping ? (
               <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+                <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
                 <span className="text-sm">Loading your channel…</span>
               </div>
             ) : (
@@ -676,7 +635,7 @@ export default function IdeasPage() {
                             href={channel.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 text-xl font-semibold text-white transition-colors hover:text-blue-300"
+                            className="inline-flex items-center gap-2 text-xl font-semibold text-white transition-colors hover:text-amber-200"
                           >
                             {channel.title}
                             <ExternalLink className="h-4 w-4 text-white/35" />
@@ -686,15 +645,15 @@ export default function IdeasPage() {
                           ) : null}
                           <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                             <span className="inline-flex items-center gap-1.5">
-                              <Users className="h-3.5 w-3.5 text-blue-400" />
+                              <Users className="h-3.5 w-3.5 text-amber-300" />
                               {subscriberLabel(channel.subscriber_count)}
                             </span>
                             <span className="inline-flex items-center gap-1.5">
-                              <Video className="h-3.5 w-3.5 text-violet-400" />
+                              <Video className="h-3.5 w-3.5 text-white/40" />
                               {formatCount(channel.video_count)} videos
                             </span>
                             <span className="inline-flex items-center gap-1.5">
-                              <Eye className="h-3.5 w-3.5 text-cyan-400" />
+                              <Eye className="h-3.5 w-3.5 text-white/40" />
                               {formatCount(channel.view_count)} views
                             </span>
                           </div>
@@ -807,8 +766,8 @@ export default function IdeasPage() {
                       <Card className="animate-in-3 overflow-hidden">
                         <CardHeader className="border-b border-white/[0.06]">
                           <div className="flex items-center gap-3.5">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20">
-                              <Sparkles className="h-5 w-5 text-violet-400" />
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400/10">
+                              <Sparkles className="h-5 w-5 text-amber-300" />
                             </div>
                             <div>
                               <CardTitle className="mb-1">Your vibe</CardTitle>
@@ -870,7 +829,7 @@ export default function IdeasPage() {
                                   {video.title}
                                 </span>
                                 <span className="hidden shrink-0 items-center gap-1.5 text-sm tabular-nums text-muted-foreground sm:flex">
-                                  <Eye className="h-3.5 w-3.5 text-cyan-400" />
+                                  <Eye className="h-3.5 w-3.5 text-white/40" />
                                   {formatCount(video.view_count)}
                                 </span>
                                 <span className="w-16 shrink-0 text-right text-xs text-white/40">
@@ -884,8 +843,8 @@ export default function IdeasPage() {
                     ) : (
                       <Card className="animate-in-4 overflow-hidden">
                         <CardHeader>
-                          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20">
-                            <Video className="h-5 w-5 text-cyan-400" />
+                          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                            <Video className="h-5 w-5 text-amber-300" />
                           </div>
                           <CardTitle className="mb-2 text-2xl">
                             We couldn&apos;t find public videos on that channel
@@ -915,7 +874,7 @@ export default function IdeasPage() {
                           {competitors.map((competitor) => (
                             <Card
                               key={competitor.channel_id}
-                              className="flex flex-col overflow-hidden transition-colors hover:border-blue-400/25 hover:bg-white/[0.05]"
+                              className="flex flex-col overflow-hidden transition-colors hover:border-amber-400/25 hover:bg-white/[0.05]"
                             >
                               <CardHeader className="p-6 pb-4">
                                 <div className="flex items-start gap-4">
@@ -946,7 +905,7 @@ export default function IdeasPage() {
                                   </Badge>
                                   <Badge
                                     variant="secondary"
-                                    className="bg-purple-500/10 text-purple-300 border-purple-400/30 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                                    className="bg-amber-500/10 text-amber-200 border-amber-400/30 rounded-full px-2.5 py-0.5 text-xs font-medium"
                                   >
                                     Score {competitor.score.toFixed(2)}
                                   </Badge>
@@ -1003,7 +962,7 @@ export default function IdeasPage() {
                                   href={competitor.url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 mt-5 text-sm font-semibold text-blue-300 hover:text-blue-200 transition-colors"
+                                  className="inline-flex items-center gap-2 mt-5 text-sm font-semibold text-amber-200 hover:text-amber-100 transition-colors"
                                 >
                                   Open channel
                                   <ExternalLink className="h-4 w-4" />
@@ -1143,7 +1102,7 @@ export default function IdeasPage() {
                                                   href={ref.url}
                                                   target="_blank"
                                                   rel="noopener noreferrer"
-                                                  className="text-xs text-blue-300 hover:text-blue-200 transition-colors inline-flex items-start gap-1.5"
+                                                  className="text-xs text-amber-200 hover:text-amber-100 transition-colors inline-flex items-start gap-1.5"
                                                 >
                                                   <ExternalLink className="h-3 w-3 mt-0.5 flex-shrink-0" />
                                                   <span>{label}</span>

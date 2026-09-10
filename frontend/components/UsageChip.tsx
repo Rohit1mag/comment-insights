@@ -15,7 +15,7 @@ export function UsageChip({ usage }: { usage: UsageData }) {
 
   if (usage.is_unlimited) {
     return (
-      <div className="hidden items-center gap-1.5 rounded-full border border-violet-400/20 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-200 sm:flex">
+      <div className="hidden items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 sm:flex">
         <Zap className="h-3.5 w-3.5" />
         Unlimited
       </div>
@@ -28,8 +28,8 @@ export function UsageChip({ usage }: { usage: UsageData }) {
         className={cn(
           "hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium sm:flex",
           usage.remaining > 0
-            ? "border-blue-400/20 bg-blue-500/10 text-blue-200"
-            : "border-amber-400/20 bg-amber-500/10 text-amber-200"
+            ? "border-amber-400/20 bg-amber-500/10 text-amber-200"
+            : "border-white/10 bg-white/5 text-white/60"
         )}
       >
         <Sparkles className="h-3.5 w-3.5" />
@@ -44,7 +44,7 @@ export function UsageChip({ usage }: { usage: UsageData }) {
         "hidden items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium sm:flex",
         isPro
           ? "border-amber-400/20 bg-amber-500/10 text-amber-200"
-          : "border-blue-400/20 bg-blue-500/10 text-blue-200"
+          : "border-white/10 bg-white/5 text-white/70"
       )}
     >
       <Sparkles className="h-3.5 w-3.5" />

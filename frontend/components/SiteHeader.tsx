@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { History, Lightbulb, Search, Youtube } from "lucide-react";
+import { History, Lightbulb, Search } from "lucide-react";
 import {
   SignInButton,
   SignUpButton,
@@ -13,6 +13,7 @@ import {
 } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { UsageChip, type UsageData } from "@/components/UsageChip";
+import { BrandMark } from "@/components/BrandMark";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -26,19 +27,13 @@ export function SiteHeader({ usage }: { usage?: UsageData | null }) {
   const { isLoaded } = useUser();
 
   return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#0b1220]/75 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 border-b border-white/[0.06] bg-[#16120e]/80 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
-        <Link href="/" className="flex shrink-0 items-center gap-2.5">
-          <span className="relative flex h-8 w-8 items-center justify-center">
-            <span className="absolute inset-0 rounded-full bg-blue-500/30 blur-md" />
-            <Youtube className="relative h-7 w-7 text-blue-400" />
-          </span>
-          <span className="gradient-text hidden text-lg font-bold tracking-tight sm:inline sm:text-xl">
-            Disstill
-          </span>
+        <Link href="/" className="flex shrink-0 items-center" aria-label="Disstill home">
+          <BrandMark className="[&>span:last-child]:hidden sm:[&>span:last-child]:inline" />
         </Link>
 
-        <nav className="hidden items-center gap-1 md:flex">
+        <nav className="hidden items-center gap-1 md:flex" aria-label="Primary">
           {NAV.map(({ href, label, icon: Icon }) => {
             const active =
               href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -49,9 +44,10 @@ export function SiteHeader({ usage }: { usage?: UsageData | null }) {
                 className={cn(
                   "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                   active
-                    ? "bg-white/10 text-white"
+                    ? "bg-amber-400/10 text-amber-100"
                     : "text-white/55 hover:bg-white/5 hover:text-white"
                 )}
+                aria-current={active ? "page" : undefined}
               >
                 <Icon className="h-4 w-4" />
                 {label}
@@ -60,7 +56,7 @@ export function SiteHeader({ usage }: { usage?: UsageData | null }) {
           })}
         </nav>
 
-        <nav className="flex items-center gap-1 md:hidden">
+        <nav className="flex items-center gap-1 md:hidden" aria-label="Primary">
           {NAV.map(({ href, label, icon: Icon }) => {
             const active =
               href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -69,10 +65,11 @@ export function SiteHeader({ usage }: { usage?: UsageData | null }) {
                 key={href}
                 href={href}
                 aria-label={label}
+                aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
                   active
-                    ? "bg-white/10 text-white"
+                    ? "bg-amber-400/10 text-amber-200"
                     : "text-white/55 hover:bg-white/5 hover:text-white"
                 )}
               >
@@ -108,7 +105,7 @@ export function SiteHeader({ usage }: { usage?: UsageData | null }) {
               appearance={{
                 elements: {
                   avatarBox:
-                    "h-8 w-8 ring-2 ring-blue-400/30 ring-offset-2 ring-offset-[#0b1220]",
+                    "h-8 w-8 ring-2 ring-amber-400/30 ring-offset-2 ring-offset-[#16120e]",
                 },
               }}
             />

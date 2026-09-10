@@ -4,30 +4,31 @@
 
 @layer base {
   :root {
-    --background: 222 47% 6%;
-    --foreground: 210 20% 98%;
-    --card: 222 40% 8%;
-    --card-foreground: 210 20% 98%;
-    --popover: 222 40% 8%;
-    --popover-foreground: 210 20% 98%;
-    --primary: 213 94% 68%;
-    --primary-foreground: 222 47% 6%;
-    --secondary: 262 83% 72%;
-    --secondary-foreground: 210 20% 98%;
-    --muted: 222 30% 14%;
-    --muted-foreground: 215 16% 65%;
-    --accent: 262 83% 72%;
-    --accent-foreground: 222 47% 6%;
-    --destructive: 0 72% 51%;
+    --background: 28 18% 6%;
+    --foreground: 36 28% 94%;
+    --card: 28 16% 8%;
+    --card-foreground: 36 28% 94%;
+    --popover: 28 16% 8%;
+    --popover-foreground: 36 28% 94%;
+    --primary: 34 78% 56%;
+    --primary-foreground: 28 30% 8%;
+    --secondary: 28 12% 14%;
+    --secondary-foreground: 36 20% 88%;
+    --muted: 28 12% 13%;
+    --muted-foreground: 30 10% 62%;
+    --accent: 28 14% 16%;
+    --accent-foreground: 36 28% 94%;
+    --destructive: 8 72% 52%;
     --destructive-foreground: 0 0% 98%;
-    --border: 222 25% 16%;
-    --input: 222 30% 12%;
-    --ring: 213 94% 68%;
-    --radius: 0.875rem;
+    --border: 30 12% 16%;
+    --input: 28 14% 11%;
+    --ring: 34 78% 56%;
+    --radius: 0.75rem;
 
-    --accent-blue: 213 94% 68%;
-    --accent-purple: 262 83% 72%;
-    --accent-cyan: 187 72% 59%;
+    --ink: 28 18% 6%;
+    --paper: 36 32% 92%;
+    --amber: 34 78% 56%;
+    --copper: 22 62% 48%;
   }
 }
 
@@ -43,23 +44,34 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-    background:
-      radial-gradient(ellipse 80% 50% at 50% -20%, hsl(213 90% 24% / 0.35), transparent),
-      radial-gradient(ellipse 50% 40% at 100% 100%, hsl(262 60% 18% / 0.25), transparent),
-      radial-gradient(ellipse 40% 30% at 0% 100%, hsl(213 70% 16% / 0.2), transparent),
-      hsl(222 47% 6%);
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(ellipse 90% 55% at 12% -10%, hsl(34 70% 28% / 0.22), transparent 55%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, hsl(22 40% 18% / 0.18), transparent 50%),
+      linear-gradient(180deg, hsl(28 18% 7%) 0%, hsl(28 18% 5%) 100%);
     background-attachment: fixed;
   }
 
+  body::before {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    opacity: 0.045;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
   h1, h2, h3, h4, h5, h6 {
-    font-weight: 700;
+    font-family: var(--font-display), ui-serif, Georgia, serif;
+    font-weight: 500;
     letter-spacing: -0.03em;
     color: hsl(var(--foreground));
   }
 
   ::selection {
-    background: hsl(var(--accent-blue) / 0.28);
-    color: white;
+    background: hsl(var(--amber) / 0.32);
+    color: hsl(var(--paper));
   }
 
   :focus-visible {
@@ -92,40 +104,18 @@
     }
   }
 
-  @keyframes gradient-shift {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-  }
-
   .animate-in-1 { animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both; }
   .animate-in-2 { animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.12s both; }
   .animate-in-3 { animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both; }
   .animate-in-4 { animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.28s both; }
   .animate-in-5 { animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.36s both; }
 
-  .gradient-text {
-    background: linear-gradient(
-      135deg,
-      hsl(var(--accent-blue)),
-      hsl(var(--accent-purple)),
-      hsl(var(--accent-cyan))
-    );
-    background-size: 200% 200%;
-    animation: gradient-shift 8s ease infinite;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  .display {
+    font-family: var(--font-display), ui-serif, Georgia, serif;
   }
 
-  .glass {
-    background: hsl(222 40% 10% / 0.55);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid hsl(210 20% 100% / 0.08);
-  }
-
-  .surface {
-    @apply rounded-2xl border border-white/[0.08] bg-white/[0.03];
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[80] focus:rounded-lg focus:bg-amber-400 focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-stone-950;
   }
 
   details > summary {

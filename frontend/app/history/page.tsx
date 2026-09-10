@@ -103,14 +103,14 @@ function SentimentIndicator({ sentiment }: { sentiment: Sentiment }) {
   return (
     <div className="flex items-center gap-3">
       <div className="flex h-1.5 w-24 overflow-hidden rounded-full bg-white/10">
-        <div style={{ width: pct(positive) }} className="bg-blue-500" />
-        <div style={{ width: pct(neutral) }} className="bg-violet-500" />
-        <div style={{ width: pct(negative) }} className="bg-pink-500" />
+        <div style={{ width: pct(positive) }} className="bg-[#6f9e6a]" />
+        <div style={{ width: pct(neutral) }} className="bg-[#c4a574]" />
+        <div style={{ width: pct(negative) }} className="bg-[#c45c4a]" />
       </div>
       <div className="hidden items-center gap-2 text-xs font-medium tabular-nums lg:flex">
-        <span className="text-blue-300">{positive}</span>
-        <span className="text-violet-300">{neutral}</span>
-        <span className="text-pink-300">{negative}</span>
+        <span className="text-[#8fba88]">{positive}</span>
+        <span className="text-[#c4a574]">{neutral}</span>
+        <span className="text-[#d37a6a]">{negative}</span>
       </div>
     </div>
   );
@@ -234,7 +234,7 @@ export default function HistoryPage() {
 
   return (
     <AppShell>
-      <main className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+      <main id="main" className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
         {selected ? (
           <AnalysisResults
             data={{
@@ -253,8 +253,8 @@ export default function HistoryPage() {
         ) : (
           <div className="mx-auto max-w-3xl">
             <PageHeader
-              title="Your history"
-              description="Every video you've analyzed, newest first."
+              title="History"
+              description="Every video you've analyzed — newest first. Open one to reread the brief."
             />
 
             {error ? (
@@ -266,12 +266,14 @@ export default function HistoryPage() {
             <SignedOut>
               <Card className="animate-in-2">
                 <CardHeader>
-                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20">
-                    <History className="h-5 w-5 text-blue-400" />
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                    <History className="h-5 w-5 text-amber-300" />
                   </div>
-                  <CardTitle className="mb-2 text-2xl">Sign in to see your history</CardTitle>
+                  <CardTitle className="mb-2 font-display text-2xl font-medium">
+                    Sign in to see your history
+                  </CardTitle>
                   <CardDescription>
-                    Past analyses are saved to your account so you can revisit them anytime.
+                    Signed-in runs are saved to your account so you can reopen the brief later.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -293,18 +295,20 @@ export default function HistoryPage() {
               ) : items.length === 0 ? (
                 <Card className="animate-in-2">
                   <CardHeader>
-                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20">
-                      <MessageSquare className="h-5 w-5 text-cyan-400" />
+                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400/10">
+                      <MessageSquare className="h-5 w-5 text-amber-300" />
                     </div>
-                    <CardTitle className="mb-2 text-2xl">No analyses yet</CardTitle>
+                    <CardTitle className="mb-2 font-display text-2xl font-medium">
+                      No analyses yet
+                    </CardTitle>
                     <CardDescription>
-                      Analyze a YouTube video and it will show up here automatically.
+                      Run a video through Disstill and it lands here automatically.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <Link
                       href="/"
-                      className="inline-flex h-10 items-center justify-center rounded-xl bg-gradient-to-r from-blue-500 to-violet-500 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 hover:from-blue-400 hover:to-violet-400"
+                      className="inline-flex h-10 items-center justify-center rounded-xl bg-amber-400 px-4 text-sm font-semibold text-stone-950 shadow-lg shadow-amber-900/20 hover:bg-amber-300"
                     >
                       <Search className="mr-2 h-4 w-4" />
                       Run your first analysis
@@ -319,7 +323,7 @@ export default function HistoryPage() {
                         key={item.id}
                         onClick={() => handleOpen(item.id)}
                         disabled={detailLoadingId !== null}
-                        className="group flex w-full cursor-pointer items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 text-left transition-colors hover:border-blue-400/25 hover:bg-white/[0.05] disabled:cursor-wait disabled:opacity-60 sm:p-5"
+                        className="group flex w-full cursor-pointer items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 text-left transition-colors hover:border-amber-400/25 hover:bg-white/[0.05] disabled:cursor-wait disabled:opacity-60 sm:p-5"
                       >
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-medium text-white">
@@ -327,11 +331,11 @@ export default function HistoryPage() {
                           </p>
                           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                             <span className="inline-flex items-center gap-1.5">
-                              <MessageSquare className="h-3.5 w-3.5 text-blue-400" />
+                              <MessageSquare className="h-3.5 w-3.5 text-amber-300" />
                               {item.total_comments ?? 0} comments
                             </span>
                             <span className="inline-flex items-center gap-1.5">
-                              <Clock className="h-3.5 w-3.5 text-violet-400" />
+                              <Clock className="h-3.5 w-3.5 text-white/40" />
                               {formatRelative(item.created_at)}
                             </span>
                           </div>
@@ -341,7 +345,7 @@ export default function HistoryPage() {
                             <SentimentIndicator sentiment={item.sentiment} />
                           </div>
                           {detailLoadingId === item.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+                            <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
                           ) : (
                             <ChevronRight className="h-4 w-4 text-white/25 transition-colors group-hover:text-white/60" />
                           )}
