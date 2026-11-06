@@ -65,7 +65,8 @@ LLM_TIMEOUT_SECS = 300.0
 # Comments sent to the LLM (top engaged + random sample)
 LLM_SAMPLE_SIZE = 200
 ACTIONS_MARKER = "---ACTIONS---"
-# Thinking can burn the entire max_tokens budget with zero visible content.
+# GLM thinking cannot be turned off. Low effort keeps the trace to a few tokens
+# so it does not eat the whole completion budget before the answer starts.
 INSIGHTS_MAX_TOKENS = 2500
 
 
@@ -78,33 +79,72 @@ def get_together_client() -> Together:
 
 
 def _insights_completion_kwargs(**extra):
-    """Shared chat.completions kwargs for summary+actions (thinking disabled)."""
+    """Shared chat.completions kwargs. Every call streams with low reasoning effort."""
     kwargs = {
         "model": LLM_MODEL,
         "max_tokens": INSIGHTS_MAX_TOKENS,
-        # Prevent the model from consuming the token budget on hidden thought tokens.
-        "chat_template_kwargs": {"enable_thinking": False},
+        "reasoning_effort": "low",
+        "stream": True,
     }
     kwargs.update(extra)
     return kwargs
 
 
-def _stream_delta_text(chunk) -> str:
-    """Extract visible text from a streaming chunk (skips empty-choice heartbeats)."""
+def _chunk_parts(chunk) -> Tuple[str, str]:
+    """Return (reasoning, content) from one streaming chunk. Empty choices are skipped."""
     try:
         choices = getattr(chunk, "choices", None) or []
         if not choices:
-            return ""
+            return "", ""
         delta = getattr(choices[0], "delta", None)
         if not delta:
-            return ""
-        text = getattr(delta, "content", None) or ""
-        if text:
-            return text
-        # Some reasoning models stream the answer via reasoning_content
-        return getattr(delta, "reasoning_content", None) or ""
+            return "", ""
+        reasoning = (
+            getattr(delta, "reasoning_content", None)
+            or getattr(delta, "reasoning", None)
+            or ""
+        )
+        content = getattr(delta, "content", None) or ""
+        return reasoning or "", content or ""
     except (AttributeError, IndexError, TypeError):
-        return ""
+        return "", ""
+
+
+def _iter_llm_events(prompt: str, *, timeout: Optional[float] = None, **extra):
+    """Yield ('reasoning', text) and ('content', text) as the model streams."""
+    if timeout is None:
+        client = get_together_client()
+    else:
+        api_key = os.getenv("TOGETHER_API_KEY")
+        if not api_key:
+            raise ValueError("TOGETHER_API_KEY not set")
+        client = Together(api_key=api_key, timeout=timeout, max_retries=2)
+    stream = client.chat.completions.create(
+        **_insights_completion_kwargs(
+            messages=[{"role": "user", "content": prompt}],
+            **extra,
+        )
+    )
+    for chunk in stream:
+        reasoning, content = _chunk_parts(chunk)
+        if reasoning:
+            yield "reasoning", reasoning
+        if content:
+            yield "content", content
+
+
+def _collect_llm_content(prompt: str, *, timeout: Optional[float] = None, **extra) -> str:
+    """Stream a completion and return the answer. Falls back to the trace if content is empty."""
+    content: List[str] = []
+    reasoning: List[str] = []
+    for kind, text in _iter_llm_events(prompt, timeout=timeout, **extra):
+        if kind == "content":
+            content.append(text)
+        else:
+            reasoning.append(text)
+    if any(part.strip() for part in content):
+        return "".join(content)
+    return "".join(reasoning)
 
 
 # Usage tracking — /tmp on Vercel (writable); local files for dev
@@ -1188,6 +1228,61 @@ def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
     return parsed if parsed is not None else []
 
 
+def _closed_json_objects(text: str, limit: int = 3) -> List[Dict]:
+    """Fully closed objects inside the first JSON array of a partial stream."""
+    if not text:
+        return []
+    t = _strip_llm_markdown_fences(text)
+    start = t.find("[")
+    if start < 0:
+        return []
+    i = start + 1
+    objects: List[Dict] = []
+    n = len(t)
+    while i < n and len(objects) < limit:
+        while i < n and t[i] in " \t\r\n,":
+            i += 1
+        if i >= n or t[i] in "]}":
+            break
+        if t[i] != "{":
+            break
+        obj_start = i
+        depth = 0
+        in_string = False
+        escape = False
+        closed = False
+        while i < n:
+            ch = t[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed = True
+                        i += 1
+                        break
+            i += 1
+        if not closed:
+            break
+        try:
+            obj = json.loads(t[obj_start:i])
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            objects.append(obj)
+    return objects
+
+
 def _sample_engaged(items: List[Dict], score_key: str = "like_count", n: int = LLM_SAMPLE_SIZE) -> List[Dict]:
     """Sample top-engaged items plus a random slice for coverage."""
     if len(items) <= n:
@@ -1278,44 +1373,48 @@ Rules for recommendations:
 
 
 def get_combined_insights(prompt: str) -> tuple[str, List[ActionItem]]:
-    """Single LLM call for summary + action items (non-streaming)."""
-    client = get_together_client()
-    response = client.chat.completions.create(
-        **_insights_completion_kwargs(
-            messages=[{"role": "user", "content": prompt}],
-        )
-    )
-    text = _extract_llm_text(response)
-    print(f"[DEBUG insights] finish={response.choices[0].finish_reason}, len={len(text)}, head={text[:200]!r}")
+    """Single LLM call for summary + action items. Streams internally, returns the full result."""
+    text = _collect_llm_content(prompt)
+    print(f"[DEBUG insights] len={len(text)}, head={text[:200]!r}")
     return _split_insights_response(text)
 
 
 def _iter_insights_stream(prompt: str):
     """
-    Yield ('summary_delta', str) while streaming, then ('done', summary, items).
+    Yield reasoning deltas, summary deltas, and action items as each JSON object closes.
     Holds back a marker-sized suffix so ---ACTIONS--- is never leaked to the client.
     Stops once the actions JSON after ---ACTIONS--- is fully parseable (including []).
     """
-    client = get_together_client()
-    stream = client.chat.completions.create(
-        **_insights_completion_kwargs(
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-        )
-    )
     buffer = ""
+    reasoning_parts: List[str] = []
     emitted = 0
     marker_hit = False
     hold = len(ACTIONS_MARKER)
+    emitted_actions = -1
 
-    for chunk in stream:
-        delta = _stream_delta_text(chunk)
-        if not delta:
+    def _emit_actions(actions_part: str):
+        nonlocal emitted_actions
+        parsed = _try_parse_action_items(actions_part.strip())
+        if parsed is None:
+            parsed = _coerce_action_items(_closed_json_objects(actions_part))
+            if not parsed:
+                return None
+        if len(parsed) != emitted_actions:
+            emitted_actions = len(parsed)
+            return parsed
+        return None
+
+    for kind, delta in _iter_llm_events(prompt):
+        if kind == "reasoning":
+            reasoning_parts.append(delta)
+            yield ("reasoning_delta", delta)
             continue
         buffer += delta
         if marker_hit:
-            # Keep reading until the actions JSON is complete (incl. empty [])
             actions_part = buffer.split(ACTIONS_MARKER, 1)[1]
+            items = _emit_actions(actions_part)
+            if items is not None:
+                yield ("action_items", items)
             if _try_parse_action_items(actions_part.strip()) is not None:
                 break
             continue
@@ -1327,6 +1426,9 @@ def _iter_insights_stream(prompt: str):
             emitted = len(summary_part)
             marker_hit = True
             actions_part = buffer.split(ACTIONS_MARKER, 1)[1]
+            items = _emit_actions(actions_part)
+            if items is not None:
+                yield ("action_items", items)
             if _try_parse_action_items(actions_part.strip()) is not None:
                 break
             continue
@@ -1335,19 +1437,21 @@ def _iter_insights_stream(prompt: str):
             yield ("summary_delta", buffer[emitted:safe_end])
             emitted = safe_end
 
+    if not buffer.strip() and reasoning_parts:
+        buffer = "".join(reasoning_parts)
     summary, items = _split_insights_response(buffer)
     # Emit any remaining summary that was held back (no marker case)
     if not marker_hit and len(summary) > emitted:
         tail = summary[emitted:]
         if tail:
             yield ("summary_delta", tail)
+    if items and len(items) != emitted_actions:
+        yield ("action_items", items)
     yield ("done", summary, items)
 
 
 def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
     """Get AI summary of comments."""
-    client = get_together_client()
-    
     sampled_comments = _sample_engaged(comments, "like_count", LLM_SAMPLE_SIZE)
     
     comments_text = "\n\n".join([
@@ -1381,16 +1485,9 @@ Style guidelines:
 
 {video_context}Comments:
 {comments_text}"""
-    
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
-    )
-    
-    msg = response.choices[0].message
-    content = msg.content or getattr(msg, "reasoning_content", None) or ""
-    print(f"[DEBUG summary] finish={response.choices[0].finish_reason}, content length={len(content)}, first 200 chars: {content[:200]!r}")
+
+    content = _collect_llm_content(prompt, max_tokens=2000)
+    print(f"[DEBUG summary] content length={len(content)}, first 200 chars: {content[:200]!r}")
     if not content.strip():
         content = "Summary could not be generated. Please try again."
     return content
@@ -1398,8 +1495,6 @@ Style guidelines:
 
 def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_description: str = "") -> Dict[str, int]:
     """Get sentiment breakdown of comments."""
-    client = get_together_client()
-    
     # Store total comment count before sampling
     total_comments = len(comments)
     
@@ -1439,15 +1534,9 @@ The three numbers must sum to the number of comments analyzed and represent coun
 
 {video_context}Comments:
 {comments_text}"""
-    
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
-    )
-    
-    response_text = _extract_llm_text(response)
-    print(f"[DEBUG yt sentiment] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+
+    response_text = _collect_llm_content(prompt, max_tokens=500)
+    print(f"[DEBUG yt sentiment] response: {response_text[:300]!r}")
     obj = extract_json_object_from_llm(response_text)
     if obj:
         parsed = _parse_sentiment_counts_from_dict(obj, total_comments)
@@ -1464,8 +1553,6 @@ The three numbers must sum to the number of comments analyzed and represent coun
 
 def get_action_items(comments: List[Dict], video_title: str = "", video_description: str = "") -> List[ActionItem]:
     """Get actionable recommendations from comments."""
-    client = get_together_client()
-    
     # Smart sampling for production: prioritize most engaged comments
     # Use top 500 comments (300 most-liked + 200 random) for cost optimization
     if len(comments) > 500:
@@ -1513,16 +1600,9 @@ Focus on:
 
 {video_context}Comments:
 {comments_text}"""
-    
-    response = client.chat.completions.create(
-        **_insights_completion_kwargs(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-        )
-    )
-    
-    response_text = _extract_llm_text(response)
-    print(f"[DEBUG yt actions] finish={response.choices[0].finish_reason}, response: {response_text[:300]!r}")
+
+    response_text = _collect_llm_content(prompt, max_tokens=1500)
+    print(f"[DEBUG yt actions] response: {response_text[:300]!r}")
     return _parse_action_items_from_response(response_text)
 
 
@@ -2177,8 +2257,16 @@ async def analyze_video_stream(http_request: Request, body: AnalyzeRequest):
                 if item is None:
                     break
                 kind = item[0]
-                if kind == "summary_delta":
+                if kind == "reasoning_delta":
+                    yield _sse("reasoning_delta", {"text": item[1]})
+                elif kind == "summary_delta":
                     yield _sse("summary_delta", {"text": item[1]})
+                elif kind == "action_items":
+                    final_action_items = item[1]
+                    yield _sse(
+                        "action_items",
+                        [a.model_dump() if hasattr(a, "model_dump") else a.dict() for a in final_action_items],
+                    )
                 elif kind == "done":
                     final_summary, final_action_items = item[1], item[2]
                     yield _sse("summary", {"text": final_summary})
@@ -2266,46 +2354,25 @@ async def download_pdf_report(request: PDFRequest):
 
 
 def _channel_llm_json(prompt: str) -> Optional[Dict]:
-    """One strict-JSON LLM call for the channel profiler, or None on failure."""
+    """One strict-JSON LLM call for the channel profiler, or None on failure.
+
+    Streams the completion (reasoning_effort=low) and parses the answer once
+    it is complete. Reasoning tokens are not part of the JSON.
+    """
     try:
-        api_key = os.getenv("TOGETHER_API_KEY")
-        if not api_key:
-            raise ValueError("TOGETHER_API_KEY not set")
         # These prompts are a fraction of the size of a comment batch, so they
         # get a much shorter leash than LLM_TIMEOUT_SECS: a stalled connection
         # here would otherwise hold the whole profile request open for minutes.
-        client = Together(
-            api_key=api_key, timeout=CHANNEL_LLM_TIMEOUT_SECS, max_retries=2
-        )
-        response = client.chat.completions.create(
-            **_insights_completion_kwargs(
-                messages=[{"role": "user", "content": prompt}],
-            )
-        )
-        return extract_json_object_from_llm(_extract_llm_text(response))
+        text = _collect_llm_content(prompt, timeout=CHANNEL_LLM_TIMEOUT_SECS)
+        return extract_json_object_from_llm(text)
     except Exception as exc:
         print(f"channel profile LLM call failed: {type(exc).__name__}")
         return None
 
 
 def _channel_llm_text_stream(prompt: str):
-    """Yield text deltas from a streaming channel-ideas LLM call."""
-    api_key = os.getenv("TOGETHER_API_KEY")
-    if not api_key:
-        raise ValueError("TOGETHER_API_KEY not set")
-    client = Together(
-        api_key=api_key, timeout=CHANNEL_LLM_TIMEOUT_SECS, max_retries=2
-    )
-    stream = client.chat.completions.create(
-        **_insights_completion_kwargs(
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-        )
-    )
-    for chunk in stream:
-        delta = _stream_delta_text(chunk)
-        if delta:
-            yield delta
+    """Yield ('reasoning', text) and ('content', text) from a channel-ideas call."""
+    yield from _iter_llm_events(prompt, timeout=CHANNEL_LLM_TIMEOUT_SECS)
 
 
 def _youtube_service():
@@ -2488,15 +2555,50 @@ async def get_my_channel(request: Request) -> SavedChannelResponse:
     return SavedChannelResponse(channel=_saved_channel_summary(email))
 
 
-@app.post("/channel/profile")
-async def get_channel_profile(
-    request: Request, body: ChannelProfileRequest
-) -> ChannelProfileResponse:
-    """Channel vibe profile, top videos, and competitors — cached for a week.
+def _dump_model(model) -> Dict:
+    return model.model_dump() if hasattr(model, "model_dump") else model.dict()
 
-    Falls back to the user's linked channel when channel_input is omitted.
-    """
-    email = require_verified_email(request)
+
+def _profile_response_from_parts(
+    channel: Dict,
+    top_videos: List[Dict],
+    vibe: Dict,
+    competitors: List[Dict],
+    *,
+    cached: bool,
+    computed_at: Optional[str],
+) -> ChannelProfileResponse:
+    return ChannelProfileResponse(
+        channel=_channel_summary(channel),
+        top_videos=_top_videos(top_videos),
+        vibe=VibeProfile(**(vibe or {})),
+        competitors=_competitors(competitors),
+        cached=cached,
+        computed_at=computed_at,
+    )
+
+
+def _save_fresh_profile(email: str, channel: Dict, result: Dict) -> None:
+    if not db.configured():
+        return
+    db.save_user_channel(
+        user_email=email,
+        channel_id=channel["channel_id"],
+        channel_title=channel.get("title"),
+        handle=channel.get("handle"),
+    )
+    db.save_channel_profile(
+        channel_id=channel["channel_id"],
+        channel=channel,
+        top_videos=result["top_videos"],
+        profile=result["vibe"],
+        competitors=result["competitors"],
+    )
+    db.record_channel_profile_run(email, channel["channel_id"])
+
+
+async def _prepare_channel_profile(email: str, body: ChannelProfileRequest):
+    """Cached ChannelProfileResponse, or a dict ready for a fresh computation."""
     youtube = _youtube_service()
 
     channel: Optional[Dict] = None
@@ -2533,11 +2635,11 @@ async def get_channel_profile(
 
     if cached and channel_insights.profile_is_fresh(cached.get("computed_at")):
         computed_at = cached.get("computed_at")
-        return ChannelProfileResponse(
-            channel=_channel_summary(cached.get("channel") or {}),
-            top_videos=_top_videos(cached.get("top_videos")),
-            vibe=VibeProfile(**(cached.get("profile") or {})),
-            competitors=_competitors(cached.get("competitors")),
+        return _profile_response_from_parts(
+            cached.get("channel") or {},
+            cached.get("top_videos") or [],
+            cached.get("profile") or {},
+            cached.get("competitors") or [],
             cached=True,
             computed_at=computed_at.isoformat() if computed_at else None,
         )
@@ -2552,9 +2654,30 @@ async def get_channel_profile(
         except ChannelInsightsError as exc:
             raise _channel_http_error(exc)
 
+    return {"email": email, "youtube": youtube, "channel": channel}
+
+
+@app.post("/channel/profile")
+async def get_channel_profile(
+    request: Request, body: ChannelProfileRequest
+) -> ChannelProfileResponse:
+    """Channel vibe profile, top videos, and competitors — cached for a week.
+
+    Falls back to the user's linked channel when channel_input is omitted.
+    Prefer /channel/profile/stream for the UI.
+    """
+    email = require_verified_email(request)
+    prepared = await _prepare_channel_profile(email, body)
+    if isinstance(prepared, ChannelProfileResponse):
+        return prepared
+
+    channel = prepared["channel"]
     try:
         result = await asyncio.to_thread(
-            channel_insights.compute_channel_profile, youtube, channel, _channel_llm_json
+            channel_insights.compute_channel_profile,
+            prepared["youtube"],
+            channel,
+            _channel_llm_json,
         )
     except ChannelInsightsError as exc:
         raise _channel_http_error(exc)
@@ -2564,29 +2687,233 @@ async def get_channel_profile(
             status_code=500, detail="We couldn't build your channel profile. Please try again."
         )
 
-    if db.configured():
-        db.save_user_channel(
-            user_email=email,
-            channel_id=channel["channel_id"],
-            channel_title=channel.get("title"),
-            handle=channel.get("handle"),
-        )
-        db.save_channel_profile(
-            channel_id=channel["channel_id"],
-            channel=channel,
-            top_videos=result["top_videos"],
-            profile=result["vibe"],
-            competitors=result["competitors"],
-        )
-        db.record_channel_profile_run(email, channel["channel_id"])
-
-    return ChannelProfileResponse(
-        channel=_channel_summary(channel),
-        top_videos=_top_videos(result["top_videos"]),
-        vibe=VibeProfile(**result["vibe"]),
-        competitors=_competitors(result["competitors"]),
+    _save_fresh_profile(email, channel, result)
+    return _profile_response_from_parts(
+        channel,
+        result["top_videos"],
+        result["vibe"],
+        result["competitors"],
         cached=False,
         computed_at=_utc_now_iso(),
+    )
+
+
+@app.post("/channel/profile/stream")
+async def stream_channel_profile(request: Request, body: ChannelProfileRequest):
+    """Stream a channel profile: status → channel → vibe fields → competitors → done."""
+    email = require_verified_email(request)
+    prepared = await _prepare_channel_profile(email, body)
+
+    async def event_gen():
+        try:
+            if isinstance(prepared, ChannelProfileResponse):
+                yield _sse(
+                    "status",
+                    {"stage": "cached", "message": "Loading your saved profile…"},
+                )
+                await asyncio.sleep(0)
+                yield _sse("profile", _dump_model(prepared))
+                yield _sse(
+                    "done",
+                    {"ok": True, "cached": True, "computed_at": prepared.computed_at},
+                )
+                return
+
+            youtube = prepared["youtube"]
+            channel = prepared["channel"]
+            yield _sse(
+                "status",
+                {"stage": "videos", "message": "Pulling your top videos…"},
+            )
+            await asyncio.sleep(0)
+            yield f":{' ' * 2048}\n\n"
+            await asyncio.sleep(0)
+
+            try:
+                top_videos = await asyncio.to_thread(
+                    lambda: channel_insights.fetch_top_videos(
+                        youtube,
+                        channel["channel_id"],
+                        uploads_playlist_id=channel.get("uploads_playlist_id", "") or "",
+                    )
+                )
+            except ChannelInsightsError as exc:
+                err = _channel_http_error(exc)
+                yield _sse("error", {"detail": err.detail})
+                return
+
+            yield _sse(
+                "channel",
+                {
+                    "channel": _dump_model(_channel_summary(channel)),
+                    "top_videos": [_dump_model(video) for video in _top_videos(top_videos)],
+                },
+            )
+            await asyncio.sleep(0)
+            yield _sse("status", {"stage": "vibe", "message": "Reading the vibe…"})
+            await asyncio.sleep(0)
+
+            queue: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def run_vibe():
+                content_parts: List[str] = []
+                reasoning_parts: List[str] = []
+                buffer = ""
+                last_partial = None
+                try:
+                    prompt = channel_insights.build_vibe_prompt(channel, top_videos)
+                    for kind, delta in _iter_llm_events(
+                        prompt, timeout=CHANNEL_LLM_TIMEOUT_SECS
+                    ):
+                        if kind == "reasoning":
+                            reasoning_parts.append(delta)
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("reasoning_delta", delta)
+                            )
+                            continue
+                        content_parts.append(delta)
+                        buffer += delta
+                        partial = channel_insights.extract_partial_vibe(buffer)
+                        if partial and partial != last_partial:
+                            last_partial = dict(partial)
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("vibe_partial", partial)
+                            )
+                    text = "".join(content_parts).strip() or "".join(reasoning_parts)
+                    vibe = channel_insights.coerce_vibe(extract_json_object_from_llm(text))
+                    loop.call_soon_threadsafe(queue.put_nowait, ("vibe_done", vibe))
+                except Exception as exc:
+                    print(f"vibe stream failed: {type(exc).__name__}: {exc}")
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait,
+                        ("error", "We couldn't read your channel's vibe. Please try again."),
+                    )
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            loop.run_in_executor(None, run_vibe)
+            vibe = None
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                kind, data = item
+                if kind == "reasoning_delta":
+                    yield _sse("reasoning_delta", {"text": data})
+                elif kind == "vibe_partial":
+                    yield _sse("vibe_partial", data)
+                elif kind == "vibe_done":
+                    vibe = data
+                    yield _sse("vibe", data)
+                elif kind == "error":
+                    yield _sse("error", {"detail": data})
+                    return
+                await asyncio.sleep(0)
+
+            if not vibe:
+                yield _sse(
+                    "error",
+                    {"detail": "We couldn't read your channel's vibe. Please try again."},
+                )
+                return
+
+            yield _sse(
+                "status",
+                {"stage": "competitors", "message": "Scouting competitors…"},
+            )
+            await asyncio.sleep(0)
+
+            holder: Dict = {}
+
+            def run_competitors():
+                def llm_json(prompt: str):
+                    content_parts: List[str] = []
+                    reasoning_parts: List[str] = []
+                    for kind, delta in _iter_llm_events(
+                        prompt, timeout=CHANNEL_LLM_TIMEOUT_SECS
+                    ):
+                        if kind == "reasoning":
+                            reasoning_parts.append(delta)
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, ("reasoning_delta", delta)
+                            )
+                        else:
+                            content_parts.append(delta)
+                    text = "".join(content_parts).strip() or "".join(reasoning_parts)
+                    return extract_json_object_from_llm(text)
+
+                try:
+                    next_vibe, competitors = channel_insights.competitors_for_vibe(
+                        youtube, channel, vibe, llm_json
+                    )
+                    holder["vibe"] = next_vibe
+                    holder["competitors"] = competitors
+                except Exception as exc:
+                    holder["error"] = exc
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            loop.run_in_executor(None, run_competitors)
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if item[0] == "reasoning_delta":
+                    yield _sse("reasoning_delta", {"text": item[1]})
+                    await asyncio.sleep(0)
+
+            if holder.get("error"):
+                exc = holder["error"]
+                if isinstance(exc, ChannelInsightsError):
+                    err = _channel_http_error(exc)
+                    yield _sse("error", {"detail": err.detail})
+                else:
+                    print(f"competitors_for_vibe failed: {type(exc).__name__}: {exc}")
+                    yield _sse(
+                        "error",
+                        {"detail": "We couldn't find competitors. Please try again."},
+                    )
+                return
+
+            result = {
+                "top_videos": top_videos,
+                "vibe": holder.get("vibe") or vibe,
+                "competitors": holder.get("competitors") or [],
+            }
+            _save_fresh_profile(email, channel, result)
+            computed_at = _utc_now_iso()
+            payload = _profile_response_from_parts(
+                channel,
+                result["top_videos"],
+                result["vibe"],
+                result["competitors"],
+                cached=False,
+                computed_at=computed_at,
+            )
+            yield _sse("profile", _dump_model(payload))
+            await asyncio.sleep(0)
+            yield _sse(
+                "done",
+                {"ok": True, "cached": False, "computed_at": computed_at},
+            )
+        except Exception:
+            import traceback
+
+            print(f"Error streaming channel profile: {traceback.format_exc()}")
+            yield _sse(
+                "error",
+                {"detail": "We couldn't build your channel profile. Please try again."},
+            )
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -2827,7 +3154,10 @@ async def get_channel_ideas_stream(request: Request, body: ChannelIdeasRequest):
                 if item is None:
                     break
                 kind = item[0]
-                if kind == "idea_partial":
+                if kind == "reasoning":
+                    yield _sse("reasoning_delta", {"text": item[1]})
+                    await asyncio.sleep(0)
+                elif kind == "idea_partial":
                     draft = item[1]
                     if not isinstance(draft, dict):
                         continue

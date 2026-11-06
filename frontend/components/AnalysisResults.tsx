@@ -26,6 +26,7 @@ interface AnalysisResultsProps {
   onNewAnalysis: () => void;
   isStreaming?: boolean;
   summaryStreaming?: boolean;
+  reasoning?: string;
   backLabel?: string;
   isDemo?: boolean;
 }
@@ -41,6 +42,7 @@ export default function AnalysisResults({
   onNewAnalysis,
   isStreaming = false,
   summaryStreaming = false,
+  reasoning = "",
   backLabel = "Analyze another video",
   isDemo = false,
 }: AnalysisResultsProps) {
@@ -253,6 +255,9 @@ export default function AnalysisResults({
           </div>
         </CardHeader>
         <CardContent className="pt-5">
+          {reasoning && summaryStreaming && !data.summary ? (
+            <p className="mb-4 text-sm leading-relaxed text-white/45">{reasoning}</p>
+          ) : null}
           {briefSections.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {briefSections.map((section, index) => {

@@ -532,6 +532,36 @@ def coerce_vibe(payload: Optional[Dict]) -> Dict:
     }
 
 
+_VIBE_STREAM_FIELDS = ("niche", "summary", "format", "audience", "tone")
+
+
+def extract_partial_vibe(text: str) -> Dict:
+    """String fields (and a closed topics array) visible in a partial vibe JSON."""
+    if not text:
+        return {}
+    t = _strip_markdown_fences(text)
+    found: Dict = {}
+    for name in _VIBE_STREAM_FIELDS:
+        complete = list(
+            re.finditer(rf'"{name}"\s*:\s*"((?:[^"\\]|\\.)*)"', t)
+        )
+        if complete:
+            found[name] = _unescape_json_string(complete[-1].group(1))
+            continue
+        trail = re.search(rf'"{name}"\s*:\s*"((?:[^"\\]|\\.)*)\Z', t)
+        if trail:
+            found[name] = _unescape_json_string(trail.group(1))
+    topics_match = re.search(r'"topics"\s*:\s*(\[[^\]]*\])', t)
+    if topics_match:
+        try:
+            topics = json.loads(topics_match.group(1))
+        except json.JSONDecodeError:
+            topics = None
+        if isinstance(topics, list):
+            found["topics"] = [str(topic).strip() for topic in topics if str(topic).strip()]
+    return {key: value for key, value in found.items() if value}
+
+
 def discover_candidates(
     youtube, own_channel_id: str, queries: List[str]
 ) -> Dict[str, Dict]:
@@ -732,7 +762,24 @@ def compute_channel_profile(
     )
 
     vibe = coerce_vibe(llm_json(build_vibe_prompt(channel, top_videos)))
-    queries = vibe.get("search_queries") or []
+    vibe, competitors = competitors_for_vibe(youtube, channel, vibe, llm_json)
+
+    return {
+        "top_videos": top_videos,
+        "vibe": vibe,
+        "competitors": competitors,
+    }
+
+
+def competitors_for_vibe(
+    youtube,
+    channel: Dict,
+    vibe: Dict,
+    llm_json: Callable[[str], Optional[Dict]],
+) -> Tuple[Dict, List[Dict]]:
+    """Discover and rank competitors from an already-built vibe profile."""
+    vibe = dict(vibe or {})
+    queries = list(vibe.get("search_queries") or [])
     if not queries:
         # Without LLM queries there is still a usable fallback: the channel's
         # own niche/title, which keeps discovery working on a bad LLM day.
@@ -767,11 +814,7 @@ def compute_channel_profile(
                 latest.isoformat() if isinstance(latest, datetime) else None
             )
 
-    return {
-        "top_videos": top_videos,
-        "vibe": vibe,
-        "competitors": competitors,
-    }
+    return vibe, competitors
 
 
 def profile_is_fresh(
@@ -1143,7 +1186,15 @@ def iter_streamed_ideas(
     ideas: List[Dict] = []
     last_partial: Optional[Dict] = None
 
-    for delta in llm_text_stream(prompt):
+    for event in llm_text_stream(prompt):
+        if isinstance(event, tuple) and len(event) == 2 and event[0] in ("reasoning", "content"):
+            kind, delta = event
+        else:
+            kind, delta = "content", event
+        if kind == "reasoning":
+            if delta:
+                yield ("reasoning", delta)
+            continue
         if not delta:
             continue
         buffer += delta

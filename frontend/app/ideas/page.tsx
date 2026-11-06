@@ -130,6 +130,21 @@ const IDEAS_LOADING_STAGES = [
 
 const IDEA_SLOT_COUNT = 3;
 
+const EMPTY_VIBE: VibeProfile = {
+  niche: "",
+  topics: [],
+  format: "",
+  audience: "",
+  tone: "",
+  summary: "",
+  search_queries: [],
+};
+
+function clipReasoning(prev: string, text: string) {
+  const next = `${prev}${text}`.replace(/\s+/g, " ").trim();
+  return next.length > 220 ? `…${next.slice(-219)}` : next;
+}
+
 async function readError(response: Response, fallback: string): Promise<string> {
   const text = await response.text();
   try {
@@ -281,6 +296,9 @@ export default function IdeasPage() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [ideasLoading, setIdeasLoading] = useState(false);
   const [ideasStatus, setIdeasStatus] = useState("");
+  const [ideasReasoning, setIdeasReasoning] = useState("");
+  const [profileStatus, setProfileStatus] = useState("");
+  const [profileReasoning, setProfileReasoning] = useState("");
   const [stageIndex, setStageIndex] = useState(0);
   const [ideasStageIndex, setIdeasStageIndex] = useState(0);
   const [error, setError] = useState("");
@@ -299,6 +317,7 @@ export default function IdeasPage() {
       setDraftIdea(null);
       setIdeasStageIndex(0);
       setIdeasStatus(IDEAS_LOADING_STAGES[0]);
+      setIdeasReasoning("");
       setIdeasError("");
 
       const timeoutId = setTimeout(() => controller.abort(), IDEAS_TIMEOUT_MS);
@@ -328,9 +347,15 @@ export default function IdeasPage() {
             const data = payload as { message?: string; stage?: string };
             if (data?.message) {
               setIdeasStatus(data.message);
+              setIdeasReasoning("");
               if (data.stage === "writing") setIdeasStageIndex(2);
               else if (data.stage === "competitors") setIdeasStageIndex(0);
             }
+          },
+          reasoning_delta: (payload) => {
+            const text = (payload as { text?: string })?.text ?? "";
+            if (!text) return;
+            setIdeasReasoning((prev) => clipReasoning(prev, text));
           },
           idea_partial: (payload) => {
             const data = payload as { idea?: Partial<VideoIdea> };
@@ -357,6 +382,7 @@ export default function IdeasPage() {
           },
           done: () => {
             setIdeasStatus("");
+            setIdeasReasoning("");
             setDraftIdea(null);
           },
         });
@@ -378,6 +404,7 @@ export default function IdeasPage() {
         if (ideasAbortRef.current === controller) {
           setIdeasLoading(false);
           setIdeasStatus("");
+          setIdeasReasoning("");
           setDraftIdea(null);
         }
       }
@@ -389,7 +416,10 @@ export default function IdeasPage() {
     async (options: ProfileRequestBody) => {
       setProfileLoading(true);
       setStageIndex(0);
+      setProfileStatus(LOADING_STAGES[0]);
+      setProfileReasoning("");
       setError("");
+      setProfile(null);
       setIdeas([]);
       setDraftIdea(null);
       setIdeasError("");
@@ -401,7 +431,7 @@ export default function IdeasPage() {
         const token = await getToken();
         if (!token) throw new Error("Sign in required");
 
-        const response = await fetch(`${getApiUrl()}/channel/profile`, {
+        const response = await fetch(`${getApiUrl()}/channel/profile/stream`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -415,11 +445,77 @@ export default function IdeasPage() {
           throw new Error(await readError(response, "Failed to profile your channel"));
         }
 
-        const data: ChannelProfileResponse = await response.json();
-        setProfile(data);
-        setChannel(data.channel);
-        setShowInput(false);
-        if ((data.competitors?.length ?? 0) > 0) {
+        const latest: { profile: ChannelProfileResponse | null } = { profile: null };
+        let streamError: string | null = null;
+
+        await consumeSse(response, {
+          status: (payload) => {
+            const data = payload as { message?: string };
+            if (data?.message) {
+              setProfileStatus(data.message);
+              setProfileReasoning("");
+            }
+          },
+          reasoning_delta: (payload) => {
+            const text = (payload as { text?: string })?.text ?? "";
+            if (!text) return;
+            setProfileReasoning((prev) => clipReasoning(prev, text));
+          },
+          channel: (payload) => {
+            const data = payload as { channel?: ChannelSummary; top_videos?: TopVideo[] };
+            if (!data?.channel) return;
+            setChannel(data.channel);
+            setShowInput(false);
+            setProfile({
+              channel: data.channel,
+              top_videos: data.top_videos ?? [],
+              vibe: EMPTY_VIBE,
+              competitors: [],
+              cached: false,
+              computed_at: null,
+            });
+          },
+          vibe_partial: (payload) => {
+            const partial = (payload || {}) as Partial<VibeProfile>;
+            setProfile((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                vibe: {
+                  ...prev.vibe,
+                  ...partial,
+                  topics: Array.isArray(partial.topics) ? partial.topics : prev.vibe.topics,
+                  search_queries: prev.vibe.search_queries,
+                },
+              };
+            });
+          },
+          vibe: (payload) => {
+            const vibe = payload as VibeProfile;
+            if (!vibe) return;
+            setProfile((prev) => (prev ? { ...prev, vibe } : prev));
+          },
+          profile: (payload) => {
+            const data = payload as ChannelProfileResponse;
+            if (!data?.channel) return;
+            latest.profile = data;
+            setProfile(data);
+            setChannel(data.channel);
+            setShowInput(false);
+          },
+          error: (payload) => {
+            const data = payload as { detail?: string };
+            streamError = data?.detail || "Failed to profile your channel";
+          },
+          done: () => {
+            setProfileReasoning("");
+          },
+        });
+
+        if (streamError) {
+          throw new Error(streamError);
+        }
+        if ((latest.profile?.competitors?.length ?? 0) > 0) {
           void loadIdeas({ refresh: Boolean(options.refresh) });
         }
       } catch (err: unknown) {
@@ -431,6 +527,7 @@ export default function IdeasPage() {
       } finally {
         clearTimeout(timeoutId);
         setProfileLoading(false);
+        setProfileReasoning("");
       }
     },
     [getToken, loadIdeas]
@@ -578,6 +675,15 @@ export default function IdeasPage() {
   const competitors = profile?.competitors ?? [];
   const topVideos = profile?.top_videos ?? [];
   const vibe = profile?.vibe;
+  const hasVibe = Boolean(
+    vibe &&
+      (vibe.summary ||
+        vibe.niche ||
+        vibe.format ||
+        vibe.audience ||
+        vibe.tone ||
+        vibe.topics.length > 0)
+  );
   const showIdeas =
     competitors.length > 0 || ideas.length > 0 || ideasLoading || Boolean(ideasError);
   const ideasProgress = Math.min(
@@ -774,16 +880,15 @@ export default function IdeasPage() {
                 )}
 
                 {profileLoading ? (
-                  <>
-                    <StatusBanner variant="info">
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                      <span>{LOADING_STAGES[stageIndex]}</span>
-                    </StatusBanner>
-                    <ProfileSkeleton />
-                  </>
+                  <StatusBanner variant="info">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                    <span>{profileReasoning || profileStatus || LOADING_STAGES[stageIndex]}</span>
+                  </StatusBanner>
                 ) : null}
 
-                {!profileLoading && profile && (
+                {profileLoading && !profile ? <ProfileSkeleton /> : null}
+
+                {profile && (
                   <>
                     {showIdeas ? (
                       <div className="animate-in-3">
@@ -837,7 +942,9 @@ export default function IdeasPage() {
                               <span>
                                 {ideas.length > 0 || draftIdea
                                   ? `Writing idea ${Math.min(ideas.length + 1, IDEA_SLOT_COUNT)} of ${IDEA_SLOT_COUNT}…`
-                                  : ideasStatus || IDEAS_LOADING_STAGES[ideasStageIndex]}
+                                  : ideasReasoning ||
+                                    ideasStatus ||
+                                    IDEAS_LOADING_STAGES[ideasStageIndex]}
                               </span>
                             </StatusBanner>
                             <div
@@ -903,7 +1010,7 @@ export default function IdeasPage() {
                       </div>
                     ) : null}
 
-                    {vibe && (
+                    {hasVibe && vibe && (
                       <Card className="animate-in-4 overflow-hidden">
                         <CardHeader className="border-b border-white/[0.06]">
                           <div className="flex items-center gap-3.5">

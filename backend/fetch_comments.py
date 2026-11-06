@@ -251,7 +251,7 @@ def summarize_constructive_criticism(comments):
 # Please provide a concise summary of the constructive criticism found in these comments"""
 
     try:
-        response = client.chat.completions.create(
+        stream = client.chat.completions.create(
             model="zai-org/GLM-5.3-Flash",
             messages=[
                 {
@@ -259,10 +259,33 @@ def summarize_constructive_criticism(comments):
                     "content": prompt
                 }
             ],
-            max_tokens=2000
+            max_tokens=2000,
+            reasoning_effort="low",
+            stream=True,
         )
-        
-        return response.choices[0].message.content
+
+        content_parts = []
+        reasoning_parts = []
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if not delta:
+                continue
+            content = getattr(delta, "content", None) or ""
+            reasoning = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or ""
+            )
+            if content:
+                content_parts.append(content)
+            elif reasoning:
+                reasoning_parts.append(reasoning)
+
+        text = "".join(content_parts).strip() or "".join(reasoning_parts)
+        return text
     
     except Exception as e:
         raise Exception(f"Error calling Together AI API: {e}")

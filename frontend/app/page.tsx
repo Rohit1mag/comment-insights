@@ -89,6 +89,7 @@ function HomePage() {
   const [isDemo, setIsDemo] = useState(demoFromUrl);
   const [isStreaming, setIsStreaming] = useState(false);
   const [summaryStreaming, setSummaryStreaming] = useState(false);
+  const [reasoning, setReasoning] = useState("");
   const [error, setError] = useState("");
   const [showGuestSignupCta, setShowGuestSignupCta] = useState(false);
   const [loadingStep, setLoadingStep] = useState("");
@@ -180,6 +181,7 @@ function HomePage() {
     setError("");
     setIsStreaming(false);
     setSummaryStreaming(false);
+    setReasoning("");
     router.replace("/?demo=1");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -187,6 +189,7 @@ function HomePage() {
   const resetToHome = () => {
     setIsStreaming(false);
     setSummaryStreaming(false);
+    setReasoning("");
     router.replace("/");
   };
 
@@ -216,6 +219,7 @@ function HomePage() {
     setAnalysisData(null);
     setIsStreaming(false);
     setSummaryStreaming(false);
+    setReasoning("");
     router.replace("/");
 
     try {
@@ -297,6 +301,14 @@ function HomePage() {
                 }
           );
         },
+        reasoning_delta: (payload) => {
+          const text = (payload as { text?: string })?.text ?? "";
+          if (!text) return;
+          setReasoning((prev) => {
+            const next = `${prev}${text}`.replace(/\s+/g, " ").trim();
+            return next.length > 280 ? `…${next.slice(-279)}` : next;
+          });
+        },
         summary_delta: (payload) => {
           const text = (payload as { text?: string })?.text ?? "";
           if (!text) return;
@@ -334,6 +346,7 @@ function HomePage() {
         done: () => {
           setIsStreaming(false);
           setSummaryStreaming(false);
+          setReasoning("");
           setLoadingStep("");
           if (!credited && usage && !usage.is_unlimited) {
             credited = true;
@@ -371,6 +384,7 @@ function HomePage() {
       }
       setIsStreaming(false);
       setSummaryStreaming(false);
+      setReasoning("");
     } finally {
       setLoading(false);
       setLoadingStep("");
@@ -589,6 +603,7 @@ function HomePage() {
               data={analysisData}
               isStreaming={isStreaming}
               summaryStreaming={summaryStreaming}
+              reasoning={reasoning}
               isDemo={isDemo}
               onNewAnalysis={resetToHome}
             />
