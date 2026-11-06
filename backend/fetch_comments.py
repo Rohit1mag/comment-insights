@@ -200,7 +200,7 @@ def get_video_comments(youtube, video_id, max_results=100, verbose=False):
 
 def summarize_constructive_criticism(comments):
     """
-    Use Claude API to analyze comments and summarize constructive criticism.
+    Use Together AI to analyze comments and summarize constructive criticism.
     
     Args:
         comments: List of comment dictionaries
@@ -218,7 +218,7 @@ def summarize_constructive_criticism(comments):
     
     client = Together(api_key=api_key, timeout=300.0, max_retries=2)
     
-    # Prepare comments text for Claude
+    # Prepare comments text
     comments_text = "\n\n".join([
         f"Comment {i+1} (Likes: {c['like_count']}):\n{c['text']}"
         for i, c in enumerate(comments)
@@ -229,26 +229,6 @@ def summarize_constructive_criticism(comments):
     , rude, or offensive, don't include it in the feedback. If no feedback is present, say so.
     Here are the comments:
     {comments_text}"""
-    
-#     prompt = f"""Please analyze the following YouTube video comments and provide a summary of constructive criticism of the video."
-
-# Focus on:
-# - Specific, actionable feedback
-# - Suggestions for improvement
-# - Thoughtful critiques that could help the creator
-# - Issues or concerns raised in a respectful manner
-
-# Ignore:
-# - Pure praise without substance
-# - Spam or irrelevant comments
-# - Hateful or toxic comments
-# - Comments that are just jokes or memes
-
-# Here are the comments:
-
-# {comments_text}
-
-# Please provide a concise summary of the constructive criticism found in these comments"""
 
     try:
         stream = client.chat.completions.create(
@@ -311,7 +291,7 @@ def main():
         print("Analyzing comments for constructive criticism...")
         print("=" * 80)
         
-        # Get summary from Claude
+        # Get summary
         summary = summarize_constructive_criticism(comments)
         
         print("\n" + "=" * 80)

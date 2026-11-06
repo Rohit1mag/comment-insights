@@ -1,7 +1,5 @@
 import type { AnalysisData } from "@/lib/types";
 
-export const DEMO_VIDEO_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-
 export const DEMO_ANALYSIS: AnalysisData = {
   video_id: "demo-m4-mac-mini",
   video_title: "I switched my entire studio to the M4 Mac Mini — 30 days later",

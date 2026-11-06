@@ -87,3 +87,4 @@ backend/subscriptions_data.json
 backend/guest_usage.json
 .vercel
 .env*
+!.env.example

@@ -912,37 +912,6 @@ def extract_video_id(url: str) -> str:
     raise ValueError("Invalid YouTube URL")
 
 
-def _extract_llm_text(response) -> str:
-    """Get text from LLM response, checking content, reasoning_content, and other fields."""
-    choice = response.choices[0]
-    msg = choice.message
-    
-    # Try standard content first
-    text = msg.content
-    if text:
-        return text.strip()
-    
-    # Try reasoning_content (Kimi and other reasoning models)
-    text = getattr(msg, "reasoning_content", None)
-    if text:
-        return text.strip()
-    
-    # Try tool_calls or function_call (some models return structured data this way)
-    tool_calls = getattr(msg, "tool_calls", None)
-    if tool_calls:
-        for tc in tool_calls:
-            fn = getattr(tc, "function", None)
-            if fn and getattr(fn, "arguments", None):
-                return fn.arguments.strip()
-    
-    # Dump all message attributes for debugging
-    attrs = {k: str(v)[:200] for k, v in vars(msg).items() if v}
-    print(f"[DEBUG _extract_llm_text] No content found. Message attrs: {attrs}")
-    print(f"[DEBUG _extract_llm_text] Choice finish_reason: {getattr(choice, 'finish_reason', 'unknown')}")
-    
-    return ""
-
-
 def _strip_llm_markdown_fences(text: str) -> str:
     """Extract content from ```json ... ``` if present (anywhere in the string)."""
     t = text.strip()
@@ -1005,88 +974,6 @@ def extract_json_array_from_llm(text: str) -> Optional[List]:
     return None
 
 
-def _float_val(v) -> float:
-    try:
-        if isinstance(v, str):
-            v = v.strip().replace(",", "")
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _extract_sentiment_floats(raw: Dict) -> tuple[float, float, float]:
-    """Read positive/neutral/negative as floats (handles % and proportions)."""
-    lower = {str(k).lower().strip(): v for k, v in raw.items()}
-
-    def pick(*names: str) -> float:
-        for n in names:
-            if n in lower:
-                return _float_val(lower[n])
-        return 0.0
-
-    p = pick("positive", "pos")
-    neu = pick("neutral", "neu")
-    neg = pick("negative", "neg")
-    if p + neu + neg == 0:
-        for k, v in lower.items():
-            fv = _float_val(v)
-            if fv == 0:
-                continue
-            if "positive" in k or k in ("pos", "p"):
-                p += fv
-            elif "negative" in k or k in ("neg", "n"):
-                neg += fv
-            elif "neutral" in k or k in ("neu", "u"):
-                neu += fv
-    return p, neu, neg
-
-
-def _parse_sentiment_counts_from_dict(raw: Dict, total_comments: int) -> Optional[Dict[str, int]]:
-    """
-    Normalize LLM sentiment to integer counts summing to total_comments.
-    Handles raw counts, percentages (sum ~100), and proportions (sum ~1).
-    Returns None if the dict cannot be interpreted (caller uses heuristic).
-    """
-    if total_comments <= 0:
-        return {"positive": 0, "neutral": 0, "negative": 0}
-
-    p, neu, neg = _extract_sentiment_floats(raw)
-    s = p + neu + neg
-    if s <= 0:
-        return None
-
-    # Proportions (e.g. 0.7, 0.2, 0.1)
-    if s <= 1.01 and max(p, neu, neg) <= 1.0:
-        p, neu, neg = (
-            p * total_comments / s,
-            neu * total_comments / s,
-            neg * total_comments / s,
-        )
-    # Percentages (e.g. 70, 20, 10) or counts that sum to 100
-    elif 90 <= s <= 110 and max(p, neu, neg) > 1.0:
-        p, neu, neg = (
-            p * total_comments / s,
-            neu * total_comments / s,
-            neg * total_comments / s,
-        )
-    else:
-        # Raw counts: scale to total_comments
-        scale = total_comments / s
-        p, neu, neg = p * scale, neu * scale, neg * scale
-
-    sentiment_counts = {
-        "positive": max(0, round(p)),
-        "neutral": max(0, round(neu)),
-        "negative": max(0, round(neg)),
-    }
-    total_sentiment = sum(sentiment_counts.values())
-    if total_sentiment != total_comments:
-        diff = total_comments - total_sentiment
-        max_key = max(sentiment_counts, key=sentiment_counts.get)
-        sentiment_counts[max_key] += diff
-    return sentiment_counts
-
-
 def heuristic_sentiment_youtube(comments: List[Dict], total: int) -> Dict[str, int]:
     """Keyword + emoji sentiment when LLM JSON is missing or invalid."""
     if total <= 0:
@@ -1136,15 +1023,6 @@ def heuristic_sentiment_youtube(comments: List[Dict], total: int) -> Dict[str, i
     if rneu < 0:
         rneu = 0
     return {"positive": rp, "neutral": rneu, "negative": rn}
-
-
-def _looks_like_equal_thirds_split(c: Dict[str, int], total: int) -> bool:
-    """Detect ~33/33/34 style outputs (often a bad LLM default)."""
-    if total < 6:
-        return False
-    t = total / 3
-    margin = max(0.02 * total, 2)
-    return all(abs(c.get(k, 0) - t) <= margin for k in ("positive", "neutral", "negative"))
 
 
 def _normalize_action_dict(item: Dict) -> Dict:
@@ -1221,11 +1099,6 @@ def _try_parse_action_items(response_text: str) -> Optional[List[ActionItem]]:
         if wrapped is not None:
             return _coerce_action_items(wrapped)
     return None
-
-
-def _parse_action_items_from_response(response_text: str) -> List[ActionItem]:
-    parsed = _try_parse_action_items(response_text)
-    return parsed if parsed is not None else []
 
 
 def _closed_json_objects(text: str, limit: int = 3) -> List[Dict]:
@@ -1375,7 +1248,6 @@ Rules for recommendations:
 def get_combined_insights(prompt: str) -> tuple[str, List[ActionItem]]:
     """Single LLM call for summary + action items. Streams internally, returns the full result."""
     text = _collect_llm_content(prompt)
-    print(f"[DEBUG insights] len={len(text)}, head={text[:200]!r}")
     return _split_insights_response(text)
 
 
@@ -1450,202 +1322,6 @@ def _iter_insights_stream(prompt: str):
     yield ("done", summary, items)
 
 
-def get_ai_summary(comments: List[Dict], video_title: str = "", video_description: str = "") -> str:
-    """Get AI summary of comments."""
-    sampled_comments = _sample_engaged(comments, "like_count", LLM_SAMPLE_SIZE)
-    
-    comments_text = "\n\n".join([
-        f"Comment {i+1} (Likes: {c['like_count']}):\n{c['text']}"
-        for i, c in enumerate(sampled_comments)
-    ])
-    
-    # Build context about the video
-    video_context = ""
-    if video_title:
-        video_context += f"Video Title: {video_title}\n\n"
-    if video_description:
-        video_context += f"Video Description: {video_description}\n\n"
-    
-    prompt = f"""Analyze these YouTube comments and write a producer brief for the creator. Follow this exact format — heading and paragraph on the same line, blank line between sections:
-
-**Overall mood:** [2–3 sentences. What the room felt like, and what they came for versus what they got.]
-
-**What landed:** [The moments, arguments, or craft people clipped, quoted, or praised. Name specifics.]
-
-**What stalled:** [What confused, bored, or frustrated people. Name the cluster, not a vague "some viewers".]
-
-**The ask:** [The follow-up, pin, or next video the comments are begging for. One concrete move.]
-
-Style guidelines:
-- Use clear, professional language
-- Be specific and concrete (mention what commenters actually said)
-- Maintain a balanced, objective tone
-- Keep paragraphs concise but informative
-- Use present tense when describing commenter sentiments
-
-{video_context}Comments:
-{comments_text}"""
-
-    content = _collect_llm_content(prompt, max_tokens=2000)
-    print(f"[DEBUG summary] content length={len(content)}, first 200 chars: {content[:200]!r}")
-    if not content.strip():
-        content = "Summary could not be generated. Please try again."
-    return content
-
-
-def get_sentiment_analysis(comments: List[Dict], video_title: str = "", video_description: str = "") -> Dict[str, int]:
-    """Get sentiment breakdown of comments."""
-    # Store total comment count before sampling
-    total_comments = len(comments)
-    
-    # Smart sampling for production: prioritize most engaged comments
-    # Use top 500 comments (300 most-liked + 200 random) for cost optimization
-    if len(comments) > 500:
-        # Get top 300 by likes (these are most important)
-        top_comments = sorted(comments, key=lambda x: x['like_count'], reverse=True)[:300]
-        # Get random 200 from the rest for representative sampling
-        remaining = [c for c in comments if c not in top_comments]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_comments = top_comments + random_sample
-    else:
-        sampled_comments = comments
-    
-    comments_text = "\n\n".join([
-        f"Comment {i+1}: {c['text']}"
-        for i, c in enumerate(sampled_comments)
-    ])
-    
-    # Build context about the video
-    video_context = ""
-    if video_title:
-        video_context += f"Video Title: {video_title}\n\n"
-    if video_description:
-        video_context += f"Video Description: {video_description}\n\n"
-    
-    prompt = f"""Analyze the sentiment of these YouTube comments and categorize each as "positive", "neutral", or "negative".
-
-Return ONLY a single JSON object (no markdown fences, no explanation) with this exact shape:
-{{
-  "positive": <number>,
-  "neutral": <number>,
-  "negative": <number>
-}}
-The three numbers must sum to the number of comments analyzed and represent counts of each sentiment.
-
-{video_context}Comments:
-{comments_text}"""
-
-    response_text = _collect_llm_content(prompt, max_tokens=500)
-    print(f"[DEBUG yt sentiment] response: {response_text[:300]!r}")
-    obj = extract_json_object_from_llm(response_text)
-    if obj:
-        parsed = _parse_sentiment_counts_from_dict(obj, total_comments)
-        if parsed is not None:
-            h = heuristic_sentiment_youtube(comments, total_comments)
-            # Kimi often returns ~equal thirds; override when keyword heuristic disagrees
-            if _looks_like_equal_thirds_split(parsed, total_comments) and not _looks_like_equal_thirds_split(
-                h, total_comments
-            ):
-                return h
-            return parsed
-    return heuristic_sentiment_youtube(comments, total_comments)
-
-
-def get_action_items(comments: List[Dict], video_title: str = "", video_description: str = "") -> List[ActionItem]:
-    """Get actionable recommendations from comments."""
-    # Smart sampling for production: prioritize most engaged comments
-    # Use top 500 comments (300 most-liked + 200 random) for cost optimization
-    if len(comments) > 500:
-        # Get top 300 by likes (these are most important)
-        top_comments = sorted(comments, key=lambda x: x['like_count'], reverse=True)[:300]
-        # Get random 200 from the rest for representative sampling
-        remaining = [c for c in comments if c not in top_comments]
-        random_sample = random.sample(remaining, min(200, len(remaining))) if remaining else []
-        sampled_comments = top_comments + random_sample
-    else:
-        sampled_comments = comments
-    
-    comments_text = "\n\n".join([
-        f"Comment {i+1} (Likes: {c['like_count']}):\n{c['text']}"
-        for i, c in enumerate(sampled_comments)
-    ])
-    
-    # Build context about the video
-    video_context = ""
-    if video_title:
-        video_context += f"Video Title: {video_title}\n\n"
-    if video_description:
-        video_context += f"Video Description: {video_description}\n\n"
-    
-    prompt = f"""Based on these YouTube comments, provide 0-3 specific, actionable recommendations for the creator to improve their next video.
-Quality over quantity: only include items clearly supported by the comments. Prefer 1–2 high-quality items over padding; return [] if nothing is strongly supported.
-
-Return ONLY a JSON array (no markdown fences, no explanation). Each item must have "title", "description", and "impact" where impact is exactly one of: High, Medium, Low.
-Example shape:
-[
-  {{
-    "title": "Short action title",
-    "description": "Brief explanation of why and how",
-    "impact": "High"
-  }}
-]
-
-Focus on:
-- Concrete, specific actions (not vague advice)
-- Things mentioned by multiple commenters
-- Balance positive reinforcement with areas to improve
-- Prioritize by impact (what will make the biggest difference)
-- Things the creator can improve from the next video, because its useless giving them recommendation for a video already posted
-- Never invent recommendations to fill a quota
-
-{video_context}Comments:
-{comments_text}"""
-
-    response_text = _collect_llm_content(prompt, max_tokens=1500)
-    print(f"[DEBUG yt actions] response: {response_text[:300]!r}")
-    return _parse_action_items_from_response(response_text)
-
-
-def assign_sentiments_to_comments(comments: List[Dict], sentiment_counts: Dict[str, int]) -> List[Comment]:
-    """Assign sentiment labels to individual comments based on overall distribution."""
-    # Simple heuristic: distribute sentiments based on like counts and text analysis
-    # For MVP, we'll use a simple approach
-    
-    total = len(comments)
-    if total == 0:
-        return []
-    
-    positive_count = sentiment_counts.get('positive', 0)
-    neutral_count = sentiment_counts.get('neutral', 0)
-    negative_count = sentiment_counts.get('negative', 0)
-    
-    # Sort comments by likes (most liked first)
-    sorted_comments = sorted(comments, key=lambda x: x['like_count'], reverse=True)
-    
-    result = []
-    for i, comment in enumerate(sorted_comments):
-        # Simple distribution based on ratios
-        ratio = i / max(total, 1)
-        
-        if ratio < positive_count / max(total, 1):
-            sentiment = "positive"
-        elif ratio < (positive_count + neutral_count) / max(total, 1):
-            sentiment = "neutral"
-        else:
-            sentiment = "negative"
-        
-        result.append(Comment(
-            author=comment['author'],
-            text=comment['text'],
-            like_count=comment['like_count'],
-            published_at=comment['published_at'],
-            sentiment=sentiment
-        ))
-    
-    # Sort back by original order (or keep by likes)
-    return result
-
-
 def generate_pdf_report(
     video_id: str,
     video_title: str,
@@ -1660,7 +1336,7 @@ def generate_pdf_report(
     from reportlab.lib.units import inch
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
