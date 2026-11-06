@@ -59,13 +59,13 @@ async def startup_event():
             "Signed-in routes will return 401; the guest trial still works."
         )
 
-LLM_MODEL = "google/gemma-4-31B-it"
+LLM_MODEL = "zai-org/GLM-5.3-Flash"
 # Together SDK default timeout is ~60s; large comment prompts need longer
 LLM_TIMEOUT_SECS = 300.0
 # Comments sent to the LLM (top engaged + random sample)
 LLM_SAMPLE_SIZE = 200
 ACTIONS_MARKER = "---ACTIONS---"
-# Gemma-4 thinking can burn the entire max_tokens budget with zero visible content.
+# Thinking can burn the entire max_tokens budget with zero visible content.
 INSIGHTS_MAX_TOKENS = 2500
 
 
@@ -82,7 +82,7 @@ def _insights_completion_kwargs(**extra):
     kwargs = {
         "model": LLM_MODEL,
         "max_tokens": INSIGHTS_MAX_TOKENS,
-        # Prevent Gemma-4 from consuming the token budget on hidden thought tokens.
+        # Prevent the model from consuming the token budget on hidden thought tokens.
         "chat_template_kwargs": {"enable_thinking": False},
     }
     kwargs.update(extra)

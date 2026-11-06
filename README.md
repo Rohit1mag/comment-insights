@@ -19,7 +19,7 @@ Guests get one free analysis. Signed-in accounts get a monthly allowance (Clerk 
 | App | Next.js 16 (App Router), TypeScript, Tailwind, shadcn/ui |
 | Auth | Clerk |
 | API | FastAPI, Pydantic |
-| Models | Together AI (`google/gemma-4-31B-it`) |
+| Models | Together AI (`zai-org/GLM-5.3-Flash`) |
 | Data | YouTube Data API v3, Neon Postgres |
 | Billing | Stripe |
 | Host | Vercel Services — Next.js + FastAPI in one project |
